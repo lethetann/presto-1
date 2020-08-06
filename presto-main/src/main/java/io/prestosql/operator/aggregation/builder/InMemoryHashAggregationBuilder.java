@@ -202,7 +202,7 @@ public class InMemoryHashAggregationBuilder
 
     private void updateIsFull(long sizeInMemory)
     {
-        if (!partial || !maxPartialMemory.isPresent()) {
+        if (!partial || maxPartialMemory.isEmpty()) {
             return;
         }
 
@@ -266,7 +266,7 @@ public class InMemoryHashAggregationBuilder
 
     private WorkProcessor<Page> buildResult(IntIterator groupIds)
     {
-        final PageBuilder pageBuilder = new PageBuilder(buildTypes());
+        PageBuilder pageBuilder = new PageBuilder(buildTypes());
         return WorkProcessor.create(() -> {
             if (!groupIds.hasNext()) {
                 return ProcessState.finished();

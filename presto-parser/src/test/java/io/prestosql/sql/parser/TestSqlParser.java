@@ -20,6 +20,7 @@ import com.google.common.collect.Lists;
 import io.prestosql.sql.tree.AddColumn;
 import io.prestosql.sql.tree.AliasedRelation;
 import io.prestosql.sql.tree.AllColumns;
+import io.prestosql.sql.tree.AllRows;
 import io.prestosql.sql.tree.Analyze;
 import io.prestosql.sql.tree.ArithmeticBinaryExpression;
 import io.prestosql.sql.tree.ArrayConstructor;
@@ -574,7 +575,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Limit("2"))));
+                        Optional.of(new Limit(new LongLiteral("2")))));
 
         assertStatement("SELECT * FROM table1 LIMIT ALL",
                 simpleQuery(
@@ -585,7 +586,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Limit("ALL"))));
+                        Optional.of(new Limit(new AllRows()))));
 
         Query valuesQuery = query(values(
                 row(new LongLiteral("1"), new StringLiteral("1")),
@@ -599,7 +600,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Limit("ALL"))));
+                        Optional.of(new Limit(new AllRows()))));
     }
 
     @Test
@@ -791,10 +792,13 @@ public class TestSqlParser
     @Test
     public void testShowColumns()
     {
-        assertStatement("SHOW COLUMNS FROM a", new ShowColumns(QualifiedName.of("a")));
-        assertStatement("SHOW COLUMNS FROM a.b", new ShowColumns(QualifiedName.of("a", "b")));
-        assertStatement("SHOW COLUMNS FROM \"awesome table\"", new ShowColumns(QualifiedName.of("awesome table")));
-        assertStatement("SHOW COLUMNS FROM \"awesome schema\".\"awesome table\"", new ShowColumns(QualifiedName.of("awesome schema", "awesome table")));
+        assertStatement("SHOW COLUMNS FROM a", new ShowColumns(QualifiedName.of("a"), Optional.empty(), Optional.empty()));
+        assertStatement("SHOW COLUMNS FROM a.b", new ShowColumns(QualifiedName.of("a", "b"), Optional.empty(), Optional.empty()));
+        assertStatement("SHOW COLUMNS FROM \"awesome table\"", new ShowColumns(QualifiedName.of("awesome table"), Optional.empty(), Optional.empty()));
+        assertStatement("SHOW COLUMNS FROM \"awesome schema\".\"awesome table\"", new ShowColumns(QualifiedName.of("awesome schema", "awesome table"), Optional.empty(), Optional.empty()));
+        assertStatement("SHOW COLUMNS FROM a.b LIKE '%$_%' ESCAPE '$'", new ShowColumns(QualifiedName.of("a", "b"), Optional.of("%$_%"), Optional.of("$")));
+        assertInvalidStatemennt("SHOW COLUMNS FROM a.b LIKE null", "mismatched input 'null'. Expecting: <string>");
+        assertInvalidStatemennt("SHOW COLUMNS FROM a.b LIKE 'a' ESCAPE null'", "mismatched input 'null'. Expecting: <string>");
     }
 
     @Test
@@ -885,7 +889,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Offset("2")),
+                        Optional.of(new Offset(new LongLiteral("2"))),
                         Optional.empty()));
 
         assertStatement("SELECT * FROM table1 OFFSET 2",
@@ -896,7 +900,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Offset("2")),
+                        Optional.of(new Offset(new LongLiteral("2"))),
                         Optional.empty()));
 
         Query valuesQuery = query(values(
@@ -910,7 +914,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Offset("2")),
+                        Optional.of(new Offset(new LongLiteral("2"))),
                         Optional.empty()));
 
         assertStatement("SELECT * FROM (VALUES (1, '1'), (2, '2')) OFFSET 2",
@@ -920,7 +924,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new Offset("2")),
+                        Optional.of(new Offset(new LongLiteral("2"))),
                         Optional.empty()));
     }
 
@@ -936,7 +940,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new FetchFirst("2"))));
+                        Optional.of(new FetchFirst(new LongLiteral("2")))));
 
         assertStatement("SELECT * FROM table1 FETCH NEXT ROW ONLY",
                 simpleQuery(
@@ -984,7 +988,7 @@ public class TestSqlParser
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.of(new FetchFirst("2", true))));
+                        Optional.of(new FetchFirst(new LongLiteral("2"), true))));
 
         assertStatement("SELECT * FROM table1 FETCH NEXT ROW WITH TIES",
                 simpleQuery(
@@ -1527,6 +1531,18 @@ public class TestSqlParser
     }
 
     @Test
+    public void testCommentColumn()
+    {
+        assertStatement("COMMENT ON COLUMN a.b IS 'test'", new Comment(Comment.Type.COLUMN, QualifiedName.of("a", "b"), Optional.of("test")));
+        assertStatement("COMMENT ON COLUMN a.b IS ''", new Comment(Comment.Type.COLUMN, QualifiedName.of("a", "b"), Optional.of("")));
+        assertStatement("COMMENT ON COLUMN a.b IS NULL", new Comment(Comment.Type.COLUMN, QualifiedName.of("a", "b"), Optional.empty()));
+
+        assertStatement("COMMENT ON COLUMN a IS 'test'", new Comment(Comment.Type.COLUMN, QualifiedName.of("a"), Optional.of("test")));
+        assertStatement("COMMENT ON COLUMN a.b.c IS 'test'", new Comment(Comment.Type.COLUMN, QualifiedName.of("a", "b", "c"), Optional.of("test")));
+        assertStatement("COMMENT ON COLUMN a.b.c.d IS 'test'", new Comment(Comment.Type.COLUMN, QualifiedName.of("a", "b", "c", "d"), Optional.of("test")));
+    }
+
+    @Test
     public void testRenameColumn()
     {
         assertStatement("ALTER TABLE foo.t RENAME COLUMN a TO b", new RenameColumn(QualifiedName.of("foo", "t"), identifier("a"), identifier("b")));
@@ -1585,15 +1601,21 @@ public class TestSqlParser
     {
         Query query = simpleQuery(selectList(new AllColumns()), table(QualifiedName.of("t")));
 
-        assertStatement("CREATE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.empty()));
-        assertStatement("CREATE OR REPLACE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, true, Optional.empty()));
+        assertStatement("CREATE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.empty(), Optional.empty()));
+        assertStatement("CREATE OR REPLACE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, true, Optional.empty(), Optional.empty()));
 
-        assertStatement("CREATE VIEW a SECURITY DEFINER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(CreateView.Security.DEFINER)));
-        assertStatement("CREATE VIEW a SECURITY INVOKER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(CreateView.Security.INVOKER)));
+        assertStatement("CREATE VIEW a SECURITY DEFINER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.empty(), Optional.of(CreateView.Security.DEFINER)));
+        assertStatement("CREATE VIEW a SECURITY INVOKER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.empty(), Optional.of(CreateView.Security.INVOKER)));
 
-        assertStatement("CREATE VIEW bar.foo AS SELECT * FROM t", new CreateView(QualifiedName.of("bar", "foo"), query, false, Optional.empty()));
-        assertStatement("CREATE VIEW \"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome view"), query, false, Optional.empty()));
-        assertStatement("CREATE VIEW \"awesome schema\".\"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome schema", "awesome view"), query, false, Optional.empty()));
+        assertStatement("CREATE VIEW a COMMENT 'comment' SECURITY DEFINER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of("comment"), Optional.of(CreateView.Security.DEFINER)));
+        assertStatement("CREATE VIEW a COMMENT '' SECURITY INVOKER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(""), Optional.of(CreateView.Security.INVOKER)));
+
+        assertStatement("CREATE VIEW a COMMENT 'comment' AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of("comment"), Optional.empty()));
+        assertStatement("CREATE VIEW a COMMENT '' AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(""), Optional.empty()));
+
+        assertStatement("CREATE VIEW bar.foo AS SELECT * FROM t", new CreateView(QualifiedName.of("bar", "foo"), query, false, Optional.empty(), Optional.empty()));
+        assertStatement("CREATE VIEW \"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome view"), query, false, Optional.empty(), Optional.empty()));
+        assertStatement("CREATE VIEW \"awesome schema\".\"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome schema", "awesome view"), query, false, Optional.empty(), Optional.empty()));
     }
 
     @Test
@@ -2084,6 +2106,83 @@ public class TestSqlParser
                 new Prepare(identifier("myquery"), simpleQuery(
                         selectList(new Parameter(0), new Parameter(1)),
                         table(QualifiedName.of("foo")))));
+
+        assertStatement("PREPARE myquery FROM SELECT * FROM foo LIMIT ?",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new AllColumns()),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new Limit(new Parameter(0))))));
+
+        assertStatement("PREPARE myquery FROM SELECT ?, ? FROM foo LIMIT ?",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new Parameter(0), new Parameter(1)),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new Limit(new Parameter(2))))));
+
+        assertStatement("PREPARE myquery FROM SELECT ? FROM foo FETCH FIRST ? ROWS ONLY",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new Parameter(0)),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new FetchFirst(new Parameter(1))))));
+
+        assertStatement("PREPARE myquery FROM SELECT ?, ? FROM foo FETCH NEXT ? ROWS WITH TIES",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new Parameter(0), new Parameter(1)),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new FetchFirst(new Parameter(2), true)))));
+
+        assertStatement("PREPARE myquery FROM SELECT ?, ? FROM foo OFFSET ? ROWS",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new Parameter(0), new Parameter(1)),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new Offset(new Parameter(2))),
+                        Optional.empty())));
+
+        assertStatement("PREPARE myquery FROM SELECT ? FROM foo OFFSET ? ROWS LIMIT ?",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new Parameter(0)),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new Offset(new Parameter(1))),
+                        Optional.of(new Limit(new Parameter(2))))));
+
+        assertStatement("PREPARE myquery FROM SELECT ? FROM foo OFFSET ? ROWS FETCH FIRST ? ROWS WITH TIES",
+                new Prepare(identifier("myquery"), simpleQuery(
+                        selectList(new Parameter(0)),
+                        table(QualifiedName.of("foo")),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.of(new Offset(new Parameter(1))),
+                        Optional.of(new FetchFirst(new Parameter(2), true)))));
     }
 
     @Test
@@ -2495,6 +2594,19 @@ public class TestSqlParser
     {
         assertParsed(query, expected, SQL_PARSER.createStatement(query, new ParsingOptions()));
         assertFormattedSql(SQL_PARSER, expected);
+    }
+
+    private static void assertInvalidStatemennt(String statement, String expectedErrorMessageRegex)
+    {
+        try {
+            Statement result = SQL_PARSER.createStatement(statement, new ParsingOptions());
+            fail("Expected to throw ParsingException for input:[" + statement + "], but got: " + result);
+        }
+        catch (ParsingException e) {
+            if (!e.getErrorMessage().matches(expectedErrorMessageRegex)) {
+                fail(format("Expected error message to match '%s', but was: '%s'", expectedErrorMessageRegex, e.getErrorMessage()));
+            }
+        }
     }
 
     private static void assertExpression(String expression, Expression expected)

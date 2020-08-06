@@ -13,19 +13,31 @@
  */
 package io.prestosql.plugin.hive;
 
-import com.google.common.collect.ImmutableSet;
 import com.google.inject.Injector;
 import com.google.inject.Key;
+import com.google.inject.Module;
 import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.event.client.EventModule;
 import io.airlift.json.JsonModule;
+import io.prestosql.plugin.base.CatalogName;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeConnectorAccessControl;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeConnectorPageSinkProvider;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeConnectorPageSourceProvider;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeConnectorSplitManager;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeEventListener;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeNodePartitioningProvider;
+import io.prestosql.plugin.base.jmx.ConnectorObjectNameGeneratorModule;
 import io.prestosql.plugin.base.jmx.MBeanServerModule;
 import io.prestosql.plugin.hive.authentication.HiveAuthenticationModule;
+import io.prestosql.plugin.hive.azure.HiveAzureModule;
 import io.prestosql.plugin.hive.gcs.HiveGcsModule;
 import io.prestosql.plugin.hive.metastore.HiveMetastore;
 import io.prestosql.plugin.hive.metastore.HiveMetastoreModule;
+import io.prestosql.plugin.hive.procedure.HiveProcedureModule;
+import io.prestosql.plugin.hive.rubix.RubixEnabledConfig;
+import io.prestosql.plugin.hive.rubix.RubixModule;
 import io.prestosql.plugin.hive.s3.HiveS3Module;
 import io.prestosql.plugin.hive.security.HiveSecurityModule;
 import io.prestosql.plugin.hive.security.SystemTableAwareAccessControl;
@@ -41,11 +53,8 @@ import io.prestosql.spi.connector.ConnectorNodePartitioningProvider;
 import io.prestosql.spi.connector.ConnectorPageSinkProvider;
 import io.prestosql.spi.connector.ConnectorPageSourceProvider;
 import io.prestosql.spi.connector.ConnectorSplitManager;
-import io.prestosql.spi.connector.classloader.ClassLoaderSafeConnectorAccessControl;
-import io.prestosql.spi.connector.classloader.ClassLoaderSafeConnectorPageSinkProvider;
-import io.prestosql.spi.connector.classloader.ClassLoaderSafeConnectorPageSourceProvider;
-import io.prestosql.spi.connector.classloader.ClassLoaderSafeConnectorSplitManager;
-import io.prestosql.spi.connector.classloader.ClassLoaderSafeNodePartitioningProvider;
+import io.prestosql.spi.connector.SystemTable;
+import io.prestosql.spi.eventlistener.EventListener;
 import io.prestosql.spi.procedure.Procedure;
 import io.prestosql.spi.type.TypeManager;
 import org.weakref.jmx.guice.MBeanModule;
@@ -54,13 +63,21 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.inject.multibindings.Multibinder.newSetBinder;
+import static io.airlift.configuration.ConditionalModule.installModuleIf;
 import static java.util.Objects.requireNonNull;
 
 public final class InternalHiveConnectorFactory
 {
     private InternalHiveConnectorFactory() {}
 
-    public static Connector createConnector(String catalogName, Map<String, String> config, ConnectorContext context, Optional<HiveMetastore> metastore)
+    public static Connector createConnector(String catalogName, Map<String, String> config, ConnectorContext context, Module module)
+    {
+        return createConnector(catalogName, config, context, module, Optional.empty());
+    }
+
+    public static Connector createConnector(String catalogName, Map<String, String> config, ConnectorContext context, Module module, Optional<HiveMetastore> metastore)
     {
         requireNonNull(config, "config is null");
 
@@ -69,13 +86,15 @@ public final class InternalHiveConnectorFactory
             Bootstrap app = new Bootstrap(
                     new EventModule(),
                     new MBeanModule(),
-                    new ConnectorObjectNameGeneratorModule(catalogName),
+                    new ConnectorObjectNameGeneratorModule(catalogName, "io.prestosql.plugin.hive", "presto.plugin.hive"),
                     new JsonModule(),
                     new HiveModule(),
                     new HiveS3Module(),
                     new HiveGcsModule(),
+                    new HiveAzureModule(),
+                    installModuleIf(RubixEnabledConfig.class, RubixEnabledConfig::isCacheEnabled, new RubixModule()),
                     new HiveMetastoreModule(metastore),
-                    new HiveSecurityModule(),
+                    new HiveSecurityModule(catalogName),
                     new HiveAuthenticationModule(),
                     new HiveProcedureModule(),
                     new MBeanServerModule(),
@@ -86,8 +105,10 @@ public final class InternalHiveConnectorFactory
                         binder.bind(TypeManager.class).toInstance(context.getTypeManager());
                         binder.bind(PageIndexerFactory.class).toInstance(context.getPageIndexerFactory());
                         binder.bind(PageSorter.class).toInstance(context.getPageSorter());
-                        binder.bind(HiveCatalogName.class).toInstance(new HiveCatalogName(catalogName));
-                    });
+                        binder.bind(CatalogName.class).toInstance(new CatalogName(catalogName));
+                    },
+                    binder -> newSetBinder(binder, EventListener.class),
+                    module);
 
             Injector injector = app
                     .strictConfig()
@@ -109,6 +130,11 @@ public final class InternalHiveConnectorFactory
                     new SystemTableAwareAccessControl(injector.getInstance(ConnectorAccessControl.class)),
                     classLoader);
             Set<Procedure> procedures = injector.getInstance(Key.get(new TypeLiteral<Set<Procedure>>() {}));
+            Set<SystemTable> systemTables = injector.getInstance(Key.get(new TypeLiteral<Set<SystemTable>>() {}));
+            Set<EventListener> eventListeners = injector.getInstance(Key.get(new TypeLiteral<Set<EventListener>>() {}))
+                    .stream()
+                    .map(listener -> new ClassLoaderSafeEventListener(listener, classLoader))
+                    .collect(toImmutableSet());
 
             return new HiveConnector(
                     lifeCycleManager,
@@ -118,8 +144,9 @@ public final class InternalHiveConnectorFactory
                     new ClassLoaderSafeConnectorPageSourceProvider(connectorPageSource, classLoader),
                     new ClassLoaderSafeConnectorPageSinkProvider(pageSinkProvider, classLoader),
                     new ClassLoaderSafeNodePartitioningProvider(connectorDistributionProvider, classLoader),
-                    ImmutableSet.of(),
+                    systemTables,
                     procedures,
+                    eventListeners,
                     hiveSessionProperties.getSessionProperties(),
                     HiveSchemaProperties.SCHEMA_PROPERTIES,
                     hiveTableProperties.getTableProperties(),

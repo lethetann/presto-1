@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.prestosql.metadata.Metadata;
-import io.prestosql.operator.scalar.FunctionAssertions;
+import io.prestosql.security.AllowAllAccessControl;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.type.Decimals;
 import io.prestosql.spi.type.SqlTimestampWithTimeZone;
@@ -42,6 +42,8 @@ import io.prestosql.sql.tree.NodeRef;
 import io.prestosql.sql.tree.QualifiedName;
 import io.prestosql.sql.tree.StringLiteral;
 import io.prestosql.sql.tree.SymbolReference;
+import io.prestosql.transaction.TestingTransactionManager;
+import io.prestosql.transaction.TransactionBuilder;
 import org.intellij.lang.annotations.Language;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
@@ -53,12 +55,12 @@ import java.math.BigInteger;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
+import static io.prestosql.metadata.ResolvedFunction.extractFunctionName;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
 import static io.prestosql.spi.type.DateType.DATE;
@@ -72,7 +74,7 @@ import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static io.prestosql.spi.type.VarcharType.createVarcharType;
 import static io.prestosql.sql.ExpressionFormatter.formatExpression;
 import static io.prestosql.sql.ExpressionTestUtils.assertExpressionEquals;
-import static io.prestosql.sql.ExpressionTestUtils.getFunctionName;
+import static io.prestosql.sql.ExpressionTestUtils.getTypes;
 import static io.prestosql.sql.ExpressionTestUtils.resolveFunctionCalls;
 import static io.prestosql.sql.ExpressionUtils.rewriteIdentifiersToSymbolReferences;
 import static io.prestosql.sql.ParsingUtil.createParsingOptions;
@@ -515,15 +517,6 @@ public class TestExpressionInterpreter
         assertEvaluatedEquals("map(ARRAY[1, 2], ARRAY[1, NULL]) IN (map(ARRAY[1, 2], ARRAY[2, NULL]))", "false");
         assertEvaluatedEquals("map(ARRAY[1, 2], ARRAY[1, NULL]) IN (map(ARRAY[1, 2], ARRAY[1, NULL]), map(ARRAY[1, 2], ARRAY[2, NULL]))", "NULL");
         assertEvaluatedEquals("map(ARRAY[1, 2], ARRAY[1, NULL]) IN (map(ARRAY[1, 2], ARRAY[1, NULL]), map(ARRAY[1, 2], ARRAY[2, NULL]), map(ARRAY[1, 2], ARRAY[1, NULL]))", "NULL");
-    }
-
-    @Test
-    public void testCurrentTimestamp()
-    {
-        double current = TEST_SESSION.getStartTime() / 1000.0;
-        assertOptimizedEquals("current_timestamp = from_unixtime(" + current + ")", "true");
-        double future = current + TimeUnit.MINUTES.toSeconds(1);
-        assertOptimizedEquals("current_timestamp > from_unixtime(" + future + ")", "false");
     }
 
     @Test
@@ -1437,7 +1430,7 @@ public class TestExpressionInterpreter
         assertEquals(evaluate(predicate), expected);
     }
 
-    private static StringLiteral rawStringLiteral(final Slice slice)
+    private static StringLiteral rawStringLiteral(Slice slice)
     {
         return new StringLiteral(slice.toStringUtf8())
         {
@@ -1466,7 +1459,7 @@ public class TestExpressionInterpreter
         for (Entry<Symbol, Type> entry : SYMBOL_TYPES.allTypes().entrySet()) {
             aliases.put(entry.getKey().getName(), new SymbolReference(entry.getKey().getName()));
         }
-        Expression rewrittenExpected = rewriteIdentifiersToSymbolReferences(SQL_PARSER.createExpression(expected));
+        Expression rewrittenExpected = rewriteIdentifiersToSymbolReferences(SQL_PARSER.createExpression(expected, new ParsingOptions()));
         assertExpressionEquals((Expression) actualOptimized, rewrittenExpected, aliases.build());
     }
 
@@ -1474,17 +1467,9 @@ public class TestExpressionInterpreter
     {
         assertRoundTrip(expression);
 
-        Expression parsedExpression = SQL_PARSER.createExpression(expression, createParsingOptions(TEST_SESSION));
-        parsedExpression = rewriteIdentifiersToSymbolReferences(parsedExpression);
-        parsedExpression = resolveFunctionCalls(METADATA, TEST_SESSION, SYMBOL_TYPES, parsedExpression);
-        parsedExpression = CanonicalizeExpressionRewriter.rewrite(
-                parsedExpression,
-                TEST_SESSION,
-                METADATA,
-                new TypeAnalyzer(SQL_PARSER, METADATA),
-                SYMBOL_TYPES);
+        Expression parsedExpression = planExpression(expression);
 
-        Map<NodeRef<Expression>, Type> expressionTypes = TYPE_ANALYZER.getTypes(TEST_SESSION, SYMBOL_TYPES, parsedExpression);
+        Map<NodeRef<Expression>, Type> expressionTypes = getTypes(TEST_SESSION, METADATA, SYMBOL_TYPES, parsedExpression);
         ExpressionInterpreter interpreter = expressionOptimizer(parsedExpression, METADATA, TEST_SESSION, expressionTypes);
         return interpreter.optimize(symbol -> {
             switch (symbol.getName().toLowerCase(ENGLISH)) {
@@ -1505,7 +1490,7 @@ public class TestExpressionInterpreter
                 case "bound_pattern":
                     return utf8Slice("%el%");
                 case "bound_timestamp_with_timezone":
-                    return new SqlTimestampWithTimeZone(new DateTime(1970, 1, 1, 1, 0, 0, 999, DateTimeZone.UTC).getMillis(), getTimeZoneKey("Z"));
+                    return SqlTimestampWithTimeZone.newInstance(3, new DateTime(1970, 1, 1, 1, 0, 0, 999, DateTimeZone.UTC).getMillis(), 0, getTimeZoneKey("Z"));
                 case "bound_varbinary":
                     return Slices.wrappedBuffer((byte) 0xab);
                 case "bound_decimal_short":
@@ -1518,6 +1503,25 @@ public class TestExpressionInterpreter
         });
     }
 
+    // TODO replace that method with io.prestosql.sql.ExpressionTestUtils.planExpression
+    private static Expression planExpression(@Language("SQL") String expression)
+    {
+        return TransactionBuilder.transaction(new TestingTransactionManager(), new AllowAllAccessControl())
+                .singleStatement()
+                .execute(TEST_SESSION, transactionSession -> {
+                    Expression parsedExpression = SQL_PARSER.createExpression(expression, createParsingOptions(transactionSession));
+                    parsedExpression = rewriteIdentifiersToSymbolReferences(parsedExpression);
+                    parsedExpression = resolveFunctionCalls(METADATA, transactionSession, SYMBOL_TYPES, parsedExpression);
+                    parsedExpression = CanonicalizeExpressionRewriter.rewrite(
+                            parsedExpression,
+                            transactionSession,
+                            METADATA,
+                            new TypeAnalyzer(SQL_PARSER, METADATA),
+                            SYMBOL_TYPES);
+                    return parsedExpression;
+                });
+    }
+
     private static void assertEvaluatedEquals(@Language("SQL") String actual, @Language("SQL") String expected)
     {
         assertEquals(evaluate(actual), evaluate(expected));
@@ -1527,7 +1531,7 @@ public class TestExpressionInterpreter
     {
         assertRoundTrip(expression);
 
-        Expression parsedExpression = FunctionAssertions.createExpression(expression, METADATA, SYMBOL_TYPES);
+        Expression parsedExpression = ExpressionTestUtils.createExpression(expression, METADATA, SYMBOL_TYPES);
 
         return evaluate(parsedExpression);
     }
@@ -1542,19 +1546,19 @@ public class TestExpressionInterpreter
 
     private static Object evaluate(Expression expression)
     {
-        Map<NodeRef<Expression>, Type> expressionTypes = TYPE_ANALYZER.getTypes(TEST_SESSION, SYMBOL_TYPES, expression);
+        Map<NodeRef<Expression>, Type> expressionTypes = getTypes(TEST_SESSION, METADATA, SYMBOL_TYPES, expression);
         ExpressionInterpreter interpreter = expressionInterpreter(expression, METADATA, TEST_SESSION, expressionTypes);
 
         return interpreter.evaluate();
     }
 
     private static class FailedFunctionRewriter
-            extends ExpressionRewriter<Object>
+            extends ExpressionRewriter<Void>
     {
         @Override
-        public Expression rewriteFunctionCall(FunctionCall node, Object context, ExpressionTreeRewriter<Object> treeRewriter)
+        public Expression rewriteFunctionCall(FunctionCall node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
         {
-            if (getFunctionName(node).equals(QualifiedName.of("fail"))) {
+            if (extractFunctionName(node.getName()).equals("fail")) {
                 return new FunctionCallBuilder(METADATA)
                         .setName(QualifiedName.of("fail"))
                         .addArgument(VARCHAR, new StringLiteral("fail"))

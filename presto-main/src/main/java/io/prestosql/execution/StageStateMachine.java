@@ -56,6 +56,7 @@ import static io.prestosql.execution.StageState.ABORTED;
 import static io.prestosql.execution.StageState.CANCELED;
 import static io.prestosql.execution.StageState.FAILED;
 import static io.prestosql.execution.StageState.FINISHED;
+import static io.prestosql.execution.StageState.FLUSHING;
 import static io.prestosql.execution.StageState.PLANNED;
 import static io.prestosql.execution.StageState.RUNNING;
 import static io.prestosql.execution.StageState.SCHEDULED;
@@ -161,7 +162,12 @@ public class StageStateMachine
 
     public boolean transitionToRunning()
     {
-        return stageState.setIf(RUNNING, currentState -> currentState != RUNNING && !currentState.isDone());
+        return stageState.setIf(RUNNING, currentState -> currentState != RUNNING && currentState != FLUSHING && !currentState.isDone());
+    }
+
+    public boolean transitionToFlushing()
+    {
+        return stageState.setIf(FLUSHING, currentState -> currentState != FLUSHING && !currentState.isDone());
     }
 
     public boolean transitionToFinished()
@@ -253,7 +259,7 @@ public class StageStateMachine
         // information, the stage could finish, and the task states would
         // never be visible.
         StageState state = stageState.get();
-        boolean isScheduled = (state == RUNNING) || state.isDone();
+        boolean isScheduled = state == RUNNING || state == FLUSHING || state.isDone();
 
         List<TaskInfo> taskInfos = ImmutableList.copyOf(taskInfosSupplier.get());
 
@@ -271,6 +277,7 @@ public class StageStateMachine
 
         long physicalInputDataSize = 0;
         long physicalInputPositions = 0;
+        long physicalInputReadTime = 0;
 
         long internalNetworkInputDataSize = 0;
         long internalNetworkInputPositions = 0;
@@ -307,6 +314,7 @@ public class StageStateMachine
 
             physicalInputDataSize += taskStats.getPhysicalInputDataSize().toBytes();
             physicalInputPositions += taskStats.getPhysicalInputPositions();
+            physicalInputReadTime += taskStats.getPhysicalInputReadTime().roundTo(NANOSECONDS);
 
             internalNetworkInputDataSize += taskStats.getInternalNetworkInputDataSize().toBytes();
             internalNetworkInputPositions += taskStats.getInternalNetworkInputPositions();
@@ -332,6 +340,7 @@ public class StageStateMachine
 
                 succinctBytes(physicalInputDataSize),
                 physicalInputPositions,
+                new Duration(physicalInputReadTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
 
                 succinctBytes(internalNetworkInputDataSize),
                 internalNetworkInputPositions,
@@ -390,6 +399,7 @@ public class StageStateMachine
 
         long physicalInputDataSize = 0;
         long physicalInputPositions = 0;
+        long physicalInputReadTime = 0;
 
         long internalNetworkInputDataSize = 0;
         long internalNetworkInputPositions = 0;
@@ -452,6 +462,7 @@ public class StageStateMachine
 
             physicalInputDataSize += taskStats.getPhysicalInputDataSize().toBytes();
             physicalInputPositions += taskStats.getPhysicalInputPositions();
+            physicalInputReadTime += taskStats.getPhysicalInputReadTime().roundTo(NANOSECONDS);
 
             internalNetworkInputDataSize += taskStats.getInternalNetworkInputDataSize().toBytes();
             internalNetworkInputPositions += taskStats.getInternalNetworkInputPositions();
@@ -512,6 +523,7 @@ public class StageStateMachine
 
                 succinctBytes(physicalInputDataSize),
                 physicalInputPositions,
+                succinctDuration(physicalInputReadTime, NANOSECONDS),
 
                 succinctBytes(internalNetworkInputDataSize),
                 internalNetworkInputPositions,

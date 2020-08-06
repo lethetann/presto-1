@@ -24,14 +24,14 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import static io.prestosql.block.ColumnarTestUtils.assertBlock;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.array;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.column;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.computeExpectedUnnestedOutput;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.createArrayBlockOfRowBlocks;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.getFieldElements;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.nullExists;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.toSlices;
-import static io.prestosql.operator.unnest.TestUnnesterUtil.validateTestInput;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.array;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.column;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.computeExpectedUnnestedOutput;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.createArrayBlockOfRowBlocks;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.getFieldElements;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.nullExists;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.toSlices;
+import static io.prestosql.operator.unnest.TestingUnnesterUtil.validateTestInput;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
@@ -110,7 +110,7 @@ public class TestArrayOfRowsUnnester
     /**
      * Test operations of ArrayOfRowUnnester incrementally on the input.
      * Output final blocks after the whole input has been processed.
-     *
+     * <p>
      * Input 3d array {@code elements} stores values from a column with type <array<row<varchar, varchar, ... {@code fieldCount} times> >.
      * elements[i] corresponds to a position in this column, represents one array of row(....).
      * elements[i][j] represents one row(....) object in the array.

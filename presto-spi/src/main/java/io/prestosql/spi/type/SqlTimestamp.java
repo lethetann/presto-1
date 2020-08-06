@@ -15,39 +15,86 @@ package io.prestosql.spi.type;
 
 import com.fasterxml.jackson.annotation.JsonValue;
 
-import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 import java.util.Optional;
 
+import static io.prestosql.spi.type.Timestamps.PICOSECONDS_PER_MICROSECOND;
+import static io.prestosql.spi.type.Timestamps.formatTimestamp;
+import static io.prestosql.spi.type.Timestamps.round;
+import static io.prestosql.spi.type.Timestamps.roundDiv;
+
 public final class SqlTimestamp
 {
     // This needs to be Locale-independent, Java Time's DateTimeFormatter compatible and should never change, as it defines the external API data format.
-    public static final String JSON_FORMAT = "uuuu-MM-dd HH:mm:ss.SSS";
+    public static final String JSON_FORMAT = "uuuu-MM-dd HH:mm:ss[.SSS]";
     public static final DateTimeFormatter JSON_FORMATTER = DateTimeFormatter.ofPattern(JSON_FORMAT);
 
-    private final long millis;
+    private final int precision;
+    private final long epochMicros;
+    private final int picosOfMicros;
     private final Optional<TimeZoneKey> sessionTimeZoneKey;
 
-    public SqlTimestamp(long millis)
+    public static SqlTimestamp fromMillis(int precision, long millis)
     {
-        this.millis = millis;
-        sessionTimeZoneKey = Optional.empty();
+        return newInstance(precision, millis * 1000, 0);
     }
 
     @Deprecated
-    public SqlTimestamp(long millisUtc, TimeZoneKey sessionTimeZoneKey)
+    public static SqlTimestamp legacyFromMillis(int precision, long millisUtc, TimeZoneKey sessionTimeZoneKey)
     {
-        this.millis = millisUtc;
-        this.sessionTimeZoneKey = Optional.of(sessionTimeZoneKey);
+        return newLegacyInstance(precision, millisUtc * 1000, 0, sessionTimeZoneKey);
+    }
+
+    public static SqlTimestamp newInstance(int precision, long epochMicros, int picosOfMicro)
+    {
+        return newInstanceWithRounding(precision, epochMicros, picosOfMicro, Optional.empty());
+    }
+
+    @Deprecated
+    public static SqlTimestamp newLegacyInstance(int precision, long epochMicros, int picosOfMicro, TimeZoneKey sessionTimeZoneKey)
+    {
+        return newInstanceWithRounding(precision, epochMicros, picosOfMicro, Optional.of(sessionTimeZoneKey));
+    }
+
+    private static SqlTimestamp newInstanceWithRounding(int precision, long epochMicros, int picosOfMicro, Optional<TimeZoneKey> sessionTimeZoneKey)
+    {
+        if (precision < 6) {
+            epochMicros = round(epochMicros, 6 - precision);
+            picosOfMicro = 0;
+        }
+        else if (precision == 6) {
+            if (round(picosOfMicro, 6) == PICOSECONDS_PER_MICROSECOND) {
+                epochMicros++;
+            }
+            picosOfMicro = 0;
+        }
+        else {
+            picosOfMicro = (int) round(picosOfMicro, 12 - precision);
+        }
+
+        return new SqlTimestamp(precision, epochMicros, picosOfMicro, sessionTimeZoneKey);
+    }
+
+    private SqlTimestamp(int precision, long epochMicros, int picosOfMicro, Optional<TimeZoneKey> sessionTimeZoneKey)
+    {
+        this.precision = precision;
+        this.epochMicros = epochMicros;
+        this.picosOfMicros = picosOfMicro;
+        this.sessionTimeZoneKey = sessionTimeZoneKey;
+    }
+
+    public int getPrecision()
+    {
+        return precision;
     }
 
     public long getMillis()
     {
         checkState(!isLegacyTimestamp(), "getMillis() can be called in new timestamp semantics only");
-        return millis;
+        return roundDiv(epochMicros, 1000);
     }
 
     /**
@@ -57,7 +104,17 @@ public final class SqlTimestamp
     public long getMillisUtc()
     {
         checkState(isLegacyTimestamp(), "getMillisUtc() can be called in legacy timestamp semantics only");
-        return millis;
+        return roundDiv(epochMicros, 1000);
+    }
+
+    public long getEpochMicros()
+    {
+        return epochMicros;
+    }
+
+    public long getPicosOfMicros()
+    {
+        return picosOfMicros;
     }
 
     /**
@@ -74,24 +131,31 @@ public final class SqlTimestamp
         return sessionTimeZoneKey.isPresent();
     }
 
-    @Override
-    public int hashCode()
+    public SqlTimestamp roundTo(int precision)
     {
-        return Objects.hash(millis, sessionTimeZoneKey);
+        return newInstanceWithRounding(precision, epochMicros, picosOfMicros, sessionTimeZoneKey);
     }
 
     @Override
-    public boolean equals(Object obj)
+    public boolean equals(Object o)
     {
-        if (this == obj) {
+        if (this == o) {
             return true;
         }
-        if (obj == null || getClass() != obj.getClass()) {
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        SqlTimestamp other = (SqlTimestamp) obj;
-        return Objects.equals(this.millis, other.millis) &&
-                Objects.equals(this.sessionTimeZoneKey, other.sessionTimeZoneKey);
+        SqlTimestamp that = (SqlTimestamp) o;
+        return epochMicros == that.epochMicros &&
+                picosOfMicros == that.picosOfMicros &&
+                precision == that.precision &&
+                sessionTimeZoneKey.equals(that.sessionTimeZoneKey);
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(epochMicros, picosOfMicros, precision, sessionTimeZoneKey);
     }
 
     @JsonValue
@@ -103,9 +167,7 @@ public final class SqlTimestamp
                 .map(ZoneId::of)
                 .orElse(ZoneOffset.UTC);
 
-        return Instant.ofEpochMilli(millis)
-                .atZone(zoneId)
-                .format(JSON_FORMATTER);
+        return formatTimestamp(precision, epochMicros, picosOfMicros, zoneId);
     }
 
     private static void checkState(boolean condition, String message)

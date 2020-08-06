@@ -65,7 +65,7 @@ public class AddColumnTask
         Session session = stateMachine.getSession();
         QualifiedObjectName tableName = createQualifiedObjectName(session, statement, statement.getName());
         Optional<TableHandle> tableHandle = metadata.getTableHandle(session, tableName);
-        if (!tableHandle.isPresent()) {
+        if (tableHandle.isEmpty()) {
             throw semanticException(TABLE_NOT_FOUND, statement, "Table '%s' does not exist", tableName);
         }
 
@@ -101,6 +101,7 @@ public class AddColumnTask
                 sqlProperties,
                 session,
                 metadata,
+                accessControl,
                 parameterExtractor(statement, parameters));
 
         ColumnMetadata column = ColumnMetadata.builder()

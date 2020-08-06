@@ -24,6 +24,7 @@ import io.prestosql.sql.planner.LogicalPlanner;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.sql.planner.RuleStatsRecorder;
 import io.prestosql.sql.planner.SubPlan;
+import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.iterative.IterativeOptimizer;
 import io.prestosql.sql.planner.iterative.rule.RemoveRedundantIdentityProjections;
 import io.prestosql.sql.planner.optimizations.PlanOptimizer;
@@ -48,7 +49,7 @@ import static java.util.stream.Collectors.toList;
 
 public class BasePlanTest
 {
-    private final LocalQueryRunnerSupplier queryRunnerSupplier;
+    private final Map<String, String> sessionProperties;
     private LocalQueryRunner queryRunner;
 
     public BasePlanTest()
@@ -58,15 +59,11 @@ public class BasePlanTest
 
     public BasePlanTest(Map<String, String> sessionProperties)
     {
-        this.queryRunnerSupplier = () -> createQueryRunner(sessionProperties);
+        this.sessionProperties = requireNonNull(sessionProperties, "sessionProperties is null");
     }
 
-    public BasePlanTest(LocalQueryRunnerSupplier supplier)
-    {
-        this.queryRunnerSupplier = requireNonNull(supplier, "queryRunnerSupplier is null");
-    }
-
-    private static LocalQueryRunner createQueryRunner(Map<String, String> sessionProperties)
+    // Subclasses should implement this method to inject their own query runners
+    protected LocalQueryRunner createLocalQueryRunner()
     {
         Session.SessionBuilder sessionBuilder = testSessionBuilder()
                 .setCatalog("local")
@@ -75,7 +72,7 @@ public class BasePlanTest
 
         sessionProperties.entrySet().forEach(entry -> sessionBuilder.setSystemProperty(entry.getKey(), entry.getValue()));
 
-        LocalQueryRunner queryRunner = new LocalQueryRunner(sessionBuilder.build());
+        LocalQueryRunner queryRunner = LocalQueryRunner.create(sessionBuilder.build());
 
         queryRunner.createCatalog(queryRunner.getDefaultSession().getCatalog().get(),
                 new TpchConnectorFactory(1),
@@ -86,7 +83,7 @@ public class BasePlanTest
     @BeforeClass
     public final void initPlanTest()
     {
-        queryRunner = queryRunnerSupplier.get();
+        this.queryRunner = createLocalQueryRunner();
     }
 
     @AfterClass(alwaysRun = true)
@@ -160,7 +157,7 @@ public class BasePlanTest
     {
         List<PlanOptimizer> optimizers = ImmutableList.of(
                 new UnaliasSymbolReferences(getQueryRunner().getMetadata()),
-                new PruneUnreferencedOutputs(),
+                new PruneUnreferencedOutputs(queryRunner.getMetadata(), new TypeAnalyzer(queryRunner.getSqlParser(), queryRunner.getMetadata())),
                 new IterativeOptimizer(
                         new RuleStatsRecorder(),
                         queryRunner.getStatsCalculator(),
@@ -225,10 +222,5 @@ public class BasePlanTest
         catch (RuntimeException e) {
             throw new AssertionError("Planning failed for SQL: " + sql, e);
         }
-    }
-
-    public interface LocalQueryRunnerSupplier
-    {
-        LocalQueryRunner get();
     }
 }

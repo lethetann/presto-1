@@ -24,6 +24,7 @@ import io.prestosql.execution.QueryStats;
 import io.prestosql.execution.resourcegroups.InternalResourceGroup;
 import io.prestosql.spi.QueryId;
 import io.prestosql.spi.memory.MemoryPoolId;
+import io.prestosql.spi.resourcegroups.QueryType;
 import org.joda.time.DateTime;
 import org.testng.annotations.Test;
 
@@ -45,19 +46,19 @@ public class TestQueryStateInfo
     @Test
     public void testQueryStateInfo()
     {
-        InternalResourceGroup.RootInternalResourceGroup root = new InternalResourceGroup.RootInternalResourceGroup("root", (group, export) -> {}, directExecutor());
-        root.setSoftMemoryLimitBytes(new DataSize(1, MEGABYTE).toBytes());
+        InternalResourceGroup root = new InternalResourceGroup("root", (group, export) -> {}, directExecutor());
+        root.setSoftMemoryLimitBytes(DataSize.of(1, MEGABYTE).toBytes());
         root.setMaxQueuedQueries(40);
         root.setHardConcurrencyLimit(0);
         root.setSchedulingPolicy(WEIGHTED);
 
         InternalResourceGroup rootA = root.getOrCreateSubGroup("a");
-        rootA.setSoftMemoryLimitBytes(new DataSize(1, MEGABYTE).toBytes());
+        rootA.setSoftMemoryLimitBytes(DataSize.of(1, MEGABYTE).toBytes());
         rootA.setMaxQueuedQueries(20);
         rootA.setHardConcurrencyLimit(0);
 
         InternalResourceGroup rootAX = rootA.getOrCreateSubGroup("x");
-        rootAX.setSoftMemoryLimitBytes(new DataSize(1, MEGABYTE).toBytes());
+        rootAX.setSoftMemoryLimitBytes(DataSize.of(1, MEGABYTE).toBytes());
         rootAX.setMaxQueuedQueries(10);
         rootAX.setHardConcurrencyLimit(0);
 
@@ -130,6 +131,7 @@ public class TestQueryStateInfo
                         DataSize.valueOf("23GB"),
                         DataSize.valueOf("24GB"),
                         DataSize.valueOf("25GB"),
+                        DataSize.valueOf("30GB"),
                         DataSize.valueOf("26GB"),
                         DataSize.valueOf("27GB"),
                         DataSize.valueOf("28GB"),
@@ -142,6 +144,7 @@ public class TestQueryStateInfo
                         ImmutableSet.of(WAITING_FOR_MEMORY),
                         DataSize.valueOf("271GB"),
                         281,
+                        Duration.valueOf("26m"),
                         DataSize.valueOf("272GB"),
                         282,
                         DataSize.valueOf("27GB"),
@@ -170,7 +173,10 @@ public class TestQueryStateInfo
                 ImmutableList.of(),
                 ImmutableSet.of(),
                 Optional.empty(),
+                ImmutableList.of(),
+                ImmutableList.of(),
                 false,
-                Optional.empty());
+                Optional.empty(),
+                Optional.of(QueryType.SELECT));
     }
 }

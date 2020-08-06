@@ -13,7 +13,6 @@
  */
 package io.prestosql.tests.hive;
 
-import io.airlift.log.Logger;
 import io.prestosql.tempto.AfterTestWithContext;
 import io.prestosql.tempto.BeforeTestWithContext;
 import io.prestosql.tempto.ProductTest;
@@ -35,13 +34,8 @@ public class TestComments
     @AfterTestWithContext
     public void dropTestTable()
     {
-        try {
-            query("DROP TABLE IF EXISTS " + COMMENT_TABLE_NAME);
-            query("DROP TABLE IF EXISTS " + COMMENT_COLUMN_NAME);
-        }
-        catch (Exception e) {
-            Logger.get(getClass()).warn(e, "failed to drop table");
-        }
+        query("DROP TABLE IF EXISTS " + COMMENT_TABLE_NAME);
+        query("DROP TABLE IF EXISTS " + COMMENT_COLUMN_NAME);
     }
 
     @Test(groups = COMMENT)
@@ -120,5 +114,50 @@ public class TestComments
         query(createTableSql);
         QueryResult actualResult = query("SHOW CREATE TABLE " + COMMENT_COLUMN_NAME);
         assertEquals(actualResult.row(0).get(0), createTableSql);
+
+        String commentedCreateTableSql = format("" +
+                        "CREATE TABLE hive.default.%s (\n" +
+                        "   c1 bigint COMMENT 'new comment',\n" +
+                        "   c2 bigint COMMENT '',\n" +
+                        "   c3 bigint\n" +
+                        ")\n" +
+                        "WITH (\n" +
+                        "   format = 'RCBINARY'\n" +
+                        ")",
+                COMMENT_COLUMN_NAME);
+
+        query(format("COMMENT ON COLUMN %s.c1 IS 'new comment'", COMMENT_COLUMN_NAME));
+        actualResult = query("SHOW CREATE TABLE " + COMMENT_COLUMN_NAME);
+        assertEquals(actualResult.row(0).get(0), commentedCreateTableSql);
+
+        commentedCreateTableSql = format("" +
+                        "CREATE TABLE hive.default.%s (\n" +
+                        "   c1 bigint COMMENT '',\n" +
+                        "   c2 bigint COMMENT '',\n" +
+                        "   c3 bigint\n" +
+                        ")\n" +
+                        "WITH (\n" +
+                        "   format = 'RCBINARY'\n" +
+                        ")",
+                COMMENT_COLUMN_NAME);
+
+        query(format("COMMENT ON COLUMN %s.c1 IS ''", COMMENT_COLUMN_NAME));
+        actualResult = query("SHOW CREATE TABLE " + COMMENT_COLUMN_NAME);
+        assertEquals(actualResult.row(0).get(0), commentedCreateTableSql);
+
+        commentedCreateTableSql = format("" +
+                        "CREATE TABLE hive.default.%s (\n" +
+                        "   c1 bigint,\n" +
+                        "   c2 bigint COMMENT '',\n" +
+                        "   c3 bigint\n" +
+                        ")\n" +
+                        "WITH (\n" +
+                        "   format = 'RCBINARY'\n" +
+                        ")",
+                COMMENT_COLUMN_NAME);
+
+        query(format("COMMENT ON COLUMN %s.c1 IS NULL", COMMENT_COLUMN_NAME));
+        actualResult = query("SHOW CREATE TABLE " + COMMENT_COLUMN_NAME);
+        assertEquals(actualResult.row(0).get(0), commentedCreateTableSql);
     }
 }

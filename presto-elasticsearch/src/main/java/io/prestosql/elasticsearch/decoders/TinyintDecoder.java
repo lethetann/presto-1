@@ -21,28 +21,48 @@ import java.util.function.Supplier;
 
 import static io.prestosql.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
+import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 public class TinyintDecoder
         implements Decoder
 {
+    private final String path;
+
+    public TinyintDecoder(String path)
+    {
+        this.path = requireNonNull(path, "path is null");
+    }
+
     @Override
     public void decode(SearchHit hit, Supplier<Object> getter, BlockBuilder output)
     {
         Object value = getter.get();
         if (value == null) {
             output.appendNull();
+            return;
         }
-        else if (value instanceof Number) {
-            long decoded = ((Number) value).longValue();
 
-            if (decoded < Byte.MIN_VALUE || decoded > Byte.MAX_VALUE) {
-                throw new PrestoException(TYPE_MISMATCH, "Value out of range for TINYINT field");
+        long decoded;
+        if (value instanceof Number) {
+            decoded = ((Number) value).longValue();
+        }
+        else if (value instanceof String) {
+            try {
+                decoded = Long.parseLong((String) value);
             }
-
-            TINYINT.writeLong(output, decoded);
+            catch (NumberFormatException e) {
+                throw new PrestoException(TYPE_MISMATCH, format("Cannot parse value for field '%s' as TINYINT: %s", path, value));
+            }
         }
         else {
-            throw new PrestoException(TYPE_MISMATCH, "Expected a numeric value for SMALLINT field");
+            throw new PrestoException(TYPE_MISMATCH, format("Expected a numeric value for field '%s' of type TINYINT: %s [%s]", path, value, value.getClass().getSimpleName()));
         }
+
+        if (decoded < Byte.MIN_VALUE || decoded > Byte.MAX_VALUE) {
+            throw new PrestoException(TYPE_MISMATCH, format("Value out of range for field '%s' of type TINYINT: %s", path, decoded));
+        }
+
+        TINYINT.writeLong(output, decoded);
     }
 }

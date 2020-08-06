@@ -22,7 +22,8 @@ import io.prestosql.testing.AbstractTestQueries;
 import io.prestosql.testing.LocalQueryRunner;
 import io.prestosql.testing.MaterializedResult;
 import io.prestosql.testing.PlanDeterminismChecker;
-import io.prestosql.testing.TestingAccessControlManager;
+import io.prestosql.testing.QueryRunner;
+import io.prestosql.testing.TestingAccessControlManager.TestingPrivilege;
 import org.intellij.lang.annotations.Language;
 import org.testng.SkipException;
 import org.testng.annotations.AfterClass;
@@ -40,11 +41,6 @@ public class TestQueryPlanDeterminism
 {
     private PlanDeterminismChecker determinismChecker;
 
-    protected TestQueryPlanDeterminism()
-    {
-        super(TestQueryPlanDeterminism::createLocalQueryRunner);
-    }
-
     @BeforeClass
     public void setUp()
     {
@@ -57,14 +53,17 @@ public class TestQueryPlanDeterminism
         determinismChecker = null;
     }
 
-    private static LocalQueryRunner createLocalQueryRunner()
+    @Override
+    protected QueryRunner createQueryRunner()
     {
         Session defaultSession = testSessionBuilder()
                 .setCatalog("local")
                 .setSchema(TINY_SCHEMA_NAME)
                 .build();
 
-        LocalQueryRunner localQueryRunner = new LocalQueryRunner(defaultSession, ImmutableMap.of(TESTING_CATALOG, TEST_CATALOG_PROPERTIES));
+        LocalQueryRunner localQueryRunner = LocalQueryRunner.builder(defaultSession)
+                .withDefaultSessionProperties(ImmutableMap.of(TESTING_CATALOG, TEST_CATALOG_PROPERTIES))
+                .build();
 
         // add the tpch catalog
         // local queries run directly against the generator
@@ -186,22 +185,22 @@ public class TestQueryPlanDeterminism
     }
 
     @Override
-    protected void assertAccessAllowed(@Language("SQL") String sql, TestingAccessControlManager.TestingPrivilege... deniedPrivileges)
+    protected void assertAccessAllowed(@Language("SQL") String sql, TestingPrivilege... deniedPrivileges)
     {
     }
 
     @Override
-    protected void assertAccessAllowed(Session session, @Language("SQL") String sql, TestingAccessControlManager.TestingPrivilege... deniedPrivileges)
+    protected void assertAccessAllowed(Session session, @Language("SQL") String sql, TestingPrivilege... deniedPrivileges)
     {
     }
 
     @Override
-    protected void assertAccessDenied(@Language("SQL") String sql, @Language("RegExp") String exceptionsMessageRegExp, TestingAccessControlManager.TestingPrivilege... deniedPrivileges)
+    protected void assertAccessDenied(@Language("SQL") String sql, @Language("RegExp") String exceptionsMessageRegExp, TestingPrivilege... deniedPrivileges)
     {
     }
 
     @Override
-    protected void assertAccessDenied(Session session, @Language("SQL") String sql, @Language("RegExp") String exceptionsMessageRegExp, TestingAccessControlManager.TestingPrivilege... deniedPrivileges)
+    protected void assertAccessDenied(Session session, @Language("SQL") String sql, @Language("RegExp") String exceptionsMessageRegExp, TestingPrivilege... deniedPrivileges)
     {
     }
 

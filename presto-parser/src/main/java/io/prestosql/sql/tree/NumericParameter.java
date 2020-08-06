@@ -28,7 +28,12 @@ public class NumericParameter
 
     public NumericParameter(NodeLocation location, String value)
     {
-        super(Optional.of(location));
+        this(Optional.of(location), value);
+    }
+
+    public NumericParameter(Optional<NodeLocation> location, String value)
+    {
+        super(location);
         this.value = requireNonNull(value, "value is null");
     }
 
@@ -72,5 +77,15 @@ public class NumericParameter
     public int hashCode()
     {
         return Objects.hash(value);
+    }
+
+    @Override
+    public boolean shallowEquals(Node other)
+    {
+        if (!sameClass(this, other)) {
+            return false;
+        }
+
+        return Objects.equals(value, ((NumericParameter) other).value);
     }
 }

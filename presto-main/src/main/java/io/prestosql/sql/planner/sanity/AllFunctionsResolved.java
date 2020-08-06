@@ -46,12 +46,12 @@ public final class AllFunctionsResolved
     }
 
     private static class Visitor
-            extends DefaultExpressionTraversalVisitor<Void, Builder<Symbol>>
+            extends DefaultExpressionTraversalVisitor<Builder<Symbol>>
     {
         @Override
         protected Void visitFunctionCall(FunctionCall node, Builder<Symbol> context)
         {
-            checkArgument(ResolvedFunction.fromQualifiedName(node.getName()).isPresent(), "Function call has not been resolved: %s", node);
+            checkArgument(ResolvedFunction.isResolved(node.getName()), "Function call has not been resolved: %s", node);
             return super.visitFunctionCall(node, context);
         }
     }

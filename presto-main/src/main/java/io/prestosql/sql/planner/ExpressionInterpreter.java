@@ -26,6 +26,7 @@ import io.prestosql.metadata.FunctionMetadata;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.operator.scalar.ArraySubscriptOperator;
+import io.prestosql.security.AccessControl;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
@@ -139,8 +140,8 @@ import static io.prestosql.type.LikeFunctions.isLikePattern;
 import static io.prestosql.type.LikeFunctions.unescapeLiteralLikePattern;
 import static io.prestosql.util.Failures.checkCondition;
 import static java.lang.Math.toIntExact;
-import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toList;
 
 public class ExpressionInterpreter
 {
@@ -173,23 +174,27 @@ public class ExpressionInterpreter
         return new ExpressionInterpreter(expression, metadata, session, expressionTypes, true);
     }
 
-    public static Object evaluateConstantExpression(Expression expression, Type expectedType, Metadata metadata, Session session, Map<NodeRef<Parameter>, Expression> parameters)
+    public static Object evaluateConstantExpression(
+            Expression expression,
+            Type expectedType,
+            Metadata metadata,
+            Session session,
+            AccessControl accessControl,
+            Map<NodeRef<Parameter>, Expression> parameters)
     {
-        ExpressionAnalyzer analyzer = createConstantAnalyzer(metadata, session, parameters, WarningCollector.NOOP);
+        ExpressionAnalyzer analyzer = createConstantAnalyzer(metadata, accessControl, session, parameters, WarningCollector.NOOP);
         analyzer.analyze(expression, Scope.create());
 
         Type actualType = analyzer.getExpressionTypes().get(NodeRef.of(expression));
         if (!new TypeCoercion(metadata::getType).canCoerce(actualType, expectedType)) {
-            throw semanticException(TYPE_MISMATCH, expression, format("Cannot cast type %s to %s",
-                    actualType.getDisplayName(),
-                    expectedType.getDisplayName()));
+            throw semanticException(TYPE_MISMATCH, expression, "Cannot cast type %s to %s", actualType.getDisplayName(), expectedType.getDisplayName());
         }
 
         Map<NodeRef<Expression>, Type> coercions = ImmutableMap.<NodeRef<Expression>, Type>builder()
                 .putAll(analyzer.getExpressionCoercions())
                 .put(NodeRef.of(expression), expectedType)
                 .build();
-        return evaluateConstantExpression(expression, coercions, analyzer.getTypeOnlyCoercions(), metadata, session, ImmutableSet.of(), parameters);
+        return evaluateConstantExpression(expression, coercions, analyzer.getTypeOnlyCoercions(), metadata, session, accessControl, ImmutableSet.of(), parameters);
     }
 
     private static Object evaluateConstantExpression(
@@ -198,6 +203,7 @@ public class ExpressionInterpreter
             Set<NodeRef<Expression>> typeOnlyCoercions,
             Metadata metadata,
             Session session,
+            AccessControl accessControl,
             Set<NodeRef<Expression>> columnReferences,
             Map<NodeRef<Parameter>, Expression> parameters)
     {
@@ -209,7 +215,7 @@ public class ExpressionInterpreter
         Expression rewrite = Coercer.addCoercions(expression, coercions, typeOnlyCoercions);
 
         // redo the analysis since above expression rewriter might create new expressions which do not have entries in the type map
-        ExpressionAnalyzer analyzer = createConstantAnalyzer(metadata, session, parameters, WarningCollector.NOOP);
+        ExpressionAnalyzer analyzer = createConstantAnalyzer(metadata, accessControl, session, parameters, WarningCollector.NOOP);
         analyzer.analyze(rewrite, Scope.create());
 
         // remove syntax sugar
@@ -217,7 +223,7 @@ public class ExpressionInterpreter
 
         // The optimization above may have rewritten the expression tree which breaks all the identity maps, so redo the analysis
         // to re-analyze coercions that might be necessary
-        analyzer = createConstantAnalyzer(metadata, session, parameters, WarningCollector.NOOP);
+        analyzer = createConstantAnalyzer(metadata, accessControl, session, parameters, WarningCollector.NOOP);
         analyzer.analyze(rewrite, Scope.create());
 
         // expressionInterpreter/optimizer only understands a subset of expression types
@@ -226,7 +232,7 @@ public class ExpressionInterpreter
 
         // The optimization above may have rewritten the expression tree which breaks all the identity maps, so redo the analysis
         // to re-analyze coercions that might be necessary
-        analyzer = createConstantAnalyzer(metadata, session, parameters, WarningCollector.NOOP);
+        analyzer = createConstantAnalyzer(metadata, accessControl, session, parameters, WarningCollector.NOOP);
         analyzer.analyze(canonicalized, Scope.create());
 
         // resolve functions
@@ -234,7 +240,7 @@ public class ExpressionInterpreter
 
         // The optimization above may have rewritten the expression tree which breaks all the identity maps, so redo the analysis
         // to re-analyze coercions that might be necessary
-        analyzer = createConstantAnalyzer(metadata, session, parameters, WarningCollector.NOOP);
+        analyzer = createConstantAnalyzer(metadata, accessControl, session, parameters, WarningCollector.NOOP);
         analyzer.analyze(resolved, Scope.create());
 
         // evaluate the expression
@@ -353,7 +359,7 @@ public class ExpressionInterpreter
         @Override
         protected Object visitLiteral(Literal node, Object context)
         {
-            return LiteralInterpreter.evaluate(metadata, session, node);
+            return LiteralInterpreter.evaluate(metadata, session, expressionTypes, node);
         }
 
         @Override
@@ -514,7 +520,7 @@ public class ExpressionInterpreter
                         }
                         return Stream.of(expression);
                     })
-                    .collect(Collectors.toList());
+                    .collect(toList());
 
             if ((!values.isEmpty() && !(values.get(0) instanceof Expression)) || values.size() == 1) {
                 return values.get(0);
@@ -672,7 +678,7 @@ public class ExpressionInterpreter
                     return value;
                 case MINUS:
                     ResolvedFunction resolvedOperator = metadata.resolveOperator(OperatorType.NEGATION, types(node.getValue()));
-                    MethodHandle handle = metadata.getScalarFunctionImplementation(resolvedOperator).getMethodHandle();
+                    MethodHandle handle = metadata.getScalarFunctionInvoker(resolvedOperator, Optional.empty()).getMethodHandle();
 
                     if (handle.type().parameterCount() > 0 && handle.type().parameterType(0) == ConnectorSession.class) {
                         handle = handle.bindTo(session);
@@ -769,7 +775,7 @@ public class ExpressionInterpreter
 
             Boolean greaterOrEqualToMin = null;
             if (min != null) {
-                greaterOrEqualToMin = (Boolean) invokeOperator(OperatorType.GREATER_THAN_OR_EQUAL, types(node.getValue(), node.getMin()), ImmutableList.of(value, min));
+                greaterOrEqualToMin = (Boolean) invokeOperator(OperatorType.LESS_THAN_OR_EQUAL, types(node.getMin(), node.getValue()), ImmutableList.of(min, value));
             }
             Boolean lessThanOrEqualToMax = null;
             if (max != null) {
@@ -910,8 +916,7 @@ public class ExpressionInterpreter
                 argumentTypes.add(type);
             }
 
-            ResolvedFunction resolvedFunction = ResolvedFunction.fromQualifiedName(node.getName())
-                    .orElseThrow(() -> new IllegalArgumentException("function call has not been resolved: " + node));
+            ResolvedFunction resolvedFunction = metadata.decodeFunction(node.getName());
             FunctionMetadata functionMetadata = metadata.getFunctionMetadata(resolvedFunction);
             for (int i = 0; i < argumentValues.size(); i++) {
                 Object value = argumentValues.get(i);
@@ -923,11 +928,11 @@ public class ExpressionInterpreter
             // do not optimize non-deterministic functions
             if (optimize && (!functionMetadata.isDeterministic() ||
                     hasUnresolvedValue(argumentValues) ||
-                    isDynamicFilter(metadata, node) ||
+                    isDynamicFilter(node) ||
                     resolvedFunction.getSignature().getName().equals("fail"))) {
                 verify(!node.isDistinct(), "window does not support distinct");
-                verify(!node.getOrderBy().isPresent(), "window does not support order by");
-                verify(!node.getFilter().isPresent(), "window does not support filter");
+                verify(node.getOrderBy().isEmpty(), "window does not support order by");
+                verify(node.getFilter().isEmpty(), "window does not support filter");
                 return new FunctionCallBuilder(metadata)
                         .setName(node.getName())
                         .setWindow(node.getWindow())
@@ -969,7 +974,7 @@ public class ExpressionInterpreter
         {
             List<Object> values = node.getValues().stream()
                     .map(value -> process(value, context))
-                    .collect(toImmutableList());
+                    .collect(toList()); // values are nullable
             Object function = process(node.getFunction(), context);
 
             if (hasUnresolvedValue(values) || hasUnresolvedValue(function)) {
@@ -997,7 +1002,7 @@ public class ExpressionInterpreter
 
             if (value instanceof Slice &&
                     node.getPattern() instanceof StringLiteral &&
-                    (!node.getEscape().isPresent() || node.getEscape().get() instanceof StringLiteral)) {
+                    (node.getEscape().isEmpty() || node.getEscape().get() instanceof StringLiteral)) {
                 // fast path when we know the pattern and escape are constant
                 return evaluateLikePredicate(node, (Slice) value, getConstantPattern(node));
             }
@@ -1032,8 +1037,8 @@ public class ExpressionInterpreter
             }
 
             // if pattern is a constant without % or _ replace with a comparison
-            if (pattern instanceof Slice && (escape == null || escape instanceof Slice) && !isLikePattern((Slice) pattern, (Slice) escape)) {
-                Slice unescapedPattern = unescapeLiteralLikePattern((Slice) pattern, (Slice) escape);
+            if (pattern instanceof Slice && (escape == null || escape instanceof Slice) && !isLikePattern((Slice) pattern, Optional.ofNullable((Slice) escape))) {
+                Slice unescapedPattern = unescapeLiteralLikePattern((Slice) pattern, Optional.ofNullable((Slice) escape));
                 Type valueType = type(node.getValue());
                 Type patternType = createVarcharType(unescapedPattern.length());
                 Optional<Type> commonSuperType = typeCoercion.getCommonSuperType(valueType, patternType);

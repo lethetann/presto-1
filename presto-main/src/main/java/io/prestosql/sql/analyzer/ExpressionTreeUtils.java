@@ -30,6 +30,7 @@ import java.util.function.Predicate;
 
 import static com.google.common.base.Predicates.alwaysTrue;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.Streams.stream;
 import static java.util.Objects.requireNonNull;
 
 public final class ExpressionTreeUtils
@@ -56,7 +57,7 @@ public final class ExpressionTreeUtils
     private static boolean isAggregation(FunctionCall functionCall, Metadata metadata)
     {
         return ((metadata.isAggregationFunction(functionCall.getName()) || functionCall.getFilter().isPresent())
-                && !functionCall.getWindow().isPresent())
+                && functionCall.getWindow().isEmpty())
                 || functionCall.getOrderBy().isPresent();
     }
 
@@ -74,7 +75,7 @@ public final class ExpressionTreeUtils
         requireNonNull(clazz, "clazz is null");
         requireNonNull(predicate, "predicate is null");
 
-        return ImmutableList.copyOf(nodes).stream()
+        return stream(nodes)
                 .flatMap(node -> linearizeNodes(node).stream())
                 .filter(clazz::isInstance)
                 .map(clazz::cast)
@@ -85,14 +86,14 @@ public final class ExpressionTreeUtils
     private static List<Node> linearizeNodes(Node node)
     {
         ImmutableList.Builder<Node> nodes = ImmutableList.builder();
-        new DefaultExpressionTraversalVisitor<Node, Void>()
+        new DefaultExpressionTraversalVisitor<Void>()
         {
             @Override
-            public Node process(Node node, Void context)
+            public Void process(Node node, Void context)
             {
-                Node result = super.process(node, context);
+                super.process(node, context);
                 nodes.add(node);
-                return result;
+                return null;
             }
         }.process(node, null);
         return nodes.build();

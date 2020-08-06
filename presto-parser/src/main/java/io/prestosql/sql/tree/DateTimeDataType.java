@@ -31,11 +31,16 @@ public class DateTimeDataType
 
     private final Type type;
     private final boolean withTimeZone;
-    private final Optional<String> precision;
+    private final Optional<DataTypeParameter> precision;
 
-    public DateTimeDataType(NodeLocation location, Type type, boolean withTimeZone, Optional<String> precision)
+    public DateTimeDataType(NodeLocation location, Type type, boolean withTimeZone, Optional<DataTypeParameter> precision)
     {
-        super(Optional.of(location));
+        this(Optional.of(location), type, withTimeZone, precision);
+    }
+
+    public DateTimeDataType(Optional<NodeLocation> location, Type type, boolean withTimeZone, Optional<DataTypeParameter> precision)
+    {
+        super(location);
         this.type = requireNonNull(type, "type is null");
         this.withTimeZone = withTimeZone;
         this.precision = requireNonNull(precision, "precision is null");
@@ -51,7 +56,7 @@ public class DateTimeDataType
         return withTimeZone;
     }
 
-    public Optional<String> getPrecision()
+    public Optional<DataTypeParameter> getPrecision()
     {
         return precision;
     }
@@ -87,5 +92,18 @@ public class DateTimeDataType
     public int hashCode()
     {
         return Objects.hash(type, withTimeZone, precision);
+    }
+
+    @Override
+    public boolean shallowEquals(Node other)
+    {
+        if (!sameClass(this, other)) {
+            return false;
+        }
+
+        DateTimeDataType otherType = (DateTimeDataType) other;
+        return type.equals(otherType.type) &&
+                withTimeZone == otherType.withTimeZone &&
+                precision.equals(otherType.precision);
     }
 }

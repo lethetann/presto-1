@@ -19,16 +19,16 @@ import io.prestosql.metadata.Metadata;
 import io.prestosql.sql.planner.DeterminismEvaluator;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.SymbolsExtractor;
-import io.prestosql.sql.tree.ComparisonExpression;
 import io.prestosql.sql.tree.Expression;
 import io.prestosql.sql.tree.ExpressionRewriter;
 import io.prestosql.sql.tree.ExpressionTreeRewriter;
+import io.prestosql.sql.tree.GenericDataType;
 import io.prestosql.sql.tree.Identifier;
 import io.prestosql.sql.tree.IsNullPredicate;
 import io.prestosql.sql.tree.LambdaExpression;
 import io.prestosql.sql.tree.LogicalBinaryExpression;
 import io.prestosql.sql.tree.LogicalBinaryExpression.Operator;
-import io.prestosql.sql.tree.NotExpression;
+import io.prestosql.sql.tree.RowDataType;
 import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.ArrayDeque;
@@ -45,7 +45,6 @@ import static com.google.common.base.Predicates.not;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.sql.tree.BooleanLiteral.FALSE_LITERAL;
 import static io.prestosql.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static io.prestosql.sql.tree.ComparisonExpression.Operator.IS_DISTINCT_FROM;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
@@ -70,15 +69,21 @@ public final class ExpressionUtils
 
     public static List<Expression> extractPredicates(LogicalBinaryExpression.Operator operator, Expression expression)
     {
+        ImmutableList.Builder<Expression> resultBuilder = ImmutableList.builder();
+        extractPredicates(operator, expression, resultBuilder);
+        return resultBuilder.build();
+    }
+
+    private static void extractPredicates(LogicalBinaryExpression.Operator operator, Expression expression, ImmutableList.Builder<Expression> resultBuilder)
+    {
         if (expression instanceof LogicalBinaryExpression && ((LogicalBinaryExpression) expression).getOperator() == operator) {
             LogicalBinaryExpression logicalBinaryExpression = (LogicalBinaryExpression) expression;
-            return ImmutableList.<Expression>builder()
-                    .addAll(extractPredicates(operator, logicalBinaryExpression.getLeft()))
-                    .addAll(extractPredicates(operator, logicalBinaryExpression.getRight()))
-                    .build();
+            extractPredicates(operator, logicalBinaryExpression.getLeft(), resultBuilder);
+            extractPredicates(operator, logicalBinaryExpression.getRight(), resultBuilder);
         }
-
-        return ImmutableList.of(expression);
+        else {
+            resultBuilder.add(expression);
+        }
     }
 
     public static Expression and(Expression... expressions)
@@ -205,6 +210,27 @@ public final class ExpressionUtils
         return and(conjuncts);
     }
 
+    public static Expression combineConjunctsWithDuplicates(Collection<Expression> expressions)
+    {
+        requireNonNull(expressions, "expressions is null");
+
+        List<Expression> conjuncts = expressions.stream()
+                .flatMap(e -> ExpressionUtils.extractConjuncts(e).stream())
+                .filter(e -> !e.equals(TRUE_LITERAL))
+                .collect(toList());
+
+        if (conjuncts.contains(FALSE_LITERAL)) {
+            return FALSE_LITERAL;
+        }
+
+        return and(conjuncts);
+    }
+
+    public static Expression combineDisjuncts(Metadata metadata, Expression... expressions)
+    {
+        return combineDisjuncts(metadata, Arrays.asList(expressions));
+    }
+
     public static Expression combineDisjuncts(Metadata metadata, Collection<Expression> expressions)
     {
         return combineDisjunctsWithDefault(metadata, expressions, FALSE_LITERAL);
@@ -254,7 +280,7 @@ public final class ExpressionUtils
         return variables.stream().anyMatch(references::contains);
     }
 
-    public static Function<Expression, Expression> expressionOrNullSymbols(final Predicate<Symbol>... nullSymbolScopes)
+    public static Function<Expression, Expression> expressionOrNullSymbols(Predicate<Symbol>... nullSymbolScopes)
     {
         return expression -> {
             ImmutableList.Builder<Expression> resultDisjunct = ImmutableList.builder();
@@ -303,24 +329,9 @@ public final class ExpressionUtils
         return result.build();
     }
 
-    public static Expression normalize(Expression expression)
-    {
-        if (expression instanceof NotExpression) {
-            NotExpression not = (NotExpression) expression;
-            if (not.getValue() instanceof ComparisonExpression && ((ComparisonExpression) not.getValue()).getOperator() != IS_DISTINCT_FROM) {
-                ComparisonExpression comparison = (ComparisonExpression) not.getValue();
-                return new ComparisonExpression(comparison.getOperator().negate(), comparison.getLeft(), comparison.getRight());
-            }
-            if (not.getValue() instanceof NotExpression) {
-                return normalize(((NotExpression) not.getValue()).getValue());
-            }
-        }
-        return expression;
-    }
-
     public static Expression rewriteIdentifiersToSymbolReferences(Expression expression)
     {
-        return ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<Void>()
+        return ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<>()
         {
             @Override
             public Expression rewriteIdentifier(Identifier node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
@@ -332,6 +343,20 @@ public final class ExpressionUtils
             public Expression rewriteLambdaExpression(LambdaExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
             {
                 return new LambdaExpression(node.getArguments(), treeRewriter.rewrite(node.getBody(), context));
+            }
+
+            @Override
+            public Expression rewriteGenericDataType(GenericDataType node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+            {
+                // do not rewrite identifiers within type parameters
+                return node;
+            }
+
+            @Override
+            public Expression rewriteRowDataType(RowDataType node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+            {
+                // do not rewrite identifiers in field names
+                return node;
             }
         }, expression);
     }

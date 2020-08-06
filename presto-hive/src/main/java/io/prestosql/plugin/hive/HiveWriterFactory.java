@@ -30,6 +30,7 @@ import io.prestosql.plugin.hive.metastore.Partition;
 import io.prestosql.plugin.hive.metastore.SortingColumn;
 import io.prestosql.plugin.hive.metastore.StorageFormat;
 import io.prestosql.plugin.hive.metastore.Table;
+import io.prestosql.plugin.hive.orc.OrcFileWriterFactory;
 import io.prestosql.plugin.hive.util.HiveWriteUtils;
 import io.prestosql.spi.NodeManager;
 import io.prestosql.spi.Page;
@@ -63,6 +64,7 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -81,13 +83,11 @@ import static io.prestosql.plugin.hive.HiveSessionProperties.getCompressionCodec
 import static io.prestosql.plugin.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_EXISTING_DIRECTORY;
 import static io.prestosql.plugin.hive.metastore.MetastoreUtil.getHiveSchema;
 import static io.prestosql.plugin.hive.metastore.StorageFormat.fromHiveStorageFormat;
-import static io.prestosql.plugin.hive.orc.OrcFileWriterFactory.createOrcDataSink;
 import static io.prestosql.plugin.hive.util.CompressionConfigUtil.configureCompression;
 import static io.prestosql.plugin.hive.util.ConfigurationUtils.toJobConf;
 import static io.prestosql.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.prestosql.plugin.hive.util.HiveUtil.getColumnTypes;
 import static io.prestosql.plugin.hive.util.HiveWriteUtils.createPartitionValues;
-import static io.prestosql.spi.StandardErrorCode.NOT_FOUND;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -118,6 +118,7 @@ public class HiveWriterFactory
     private final LocationHandle locationHandle;
     private final LocationService locationService;
     private final String queryId;
+    private final boolean isCreateTransactionalTable;
 
     private final HivePageSinkMetadataProvider pageSinkMetadataProvider;
     private final TypeManager typeManager;
@@ -146,6 +147,7 @@ public class HiveWriterFactory
             String schemaName,
             String tableName,
             boolean isCreateTable,
+            boolean isTransactional,
             List<HiveColumnHandle> inputColumns,
             HiveStorageFormat tableStorageFormat,
             HiveStorageFormat partitionStorageFormat,
@@ -211,6 +213,7 @@ public class HiveWriterFactory
         this.partitionColumnNames = partitionColumnNames.build();
         this.partitionColumnTypes = partitionColumnTypes.build();
         this.dataColumns = dataColumns.build();
+        this.isCreateTransactionalTable = isCreateTable && isTransactional;
 
         Path writePath;
         if (isCreateTable) {
@@ -221,8 +224,8 @@ public class HiveWriterFactory
         }
         else {
             Optional<Table> table = pageSinkMetadataProvider.getTable();
-            if (!table.isPresent()) {
-                throw new PrestoException(HIVE_INVALID_METADATA, format("Table %s.%s was dropped during insert", schemaName, tableName));
+            if (table.isEmpty()) {
+                throw new PrestoException(HIVE_INVALID_METADATA, format("Table '%s.%s' was dropped during insert", schemaName, tableName));
             }
             this.table = table.get();
             writePath = locationService.getQueryWriteInfo(locationHandle).getWritePath();
@@ -266,16 +269,10 @@ public class HiveWriterFactory
             checkArgument(bucketNumber.getAsInt() < bucketCount.getAsInt(), "Bucket number %s must be less than bucket count %s", bucketNumber, bucketCount);
         }
         else {
-            checkArgument(!bucketNumber.isPresent(), "Bucket number provided by for table that is not bucketed");
+            checkArgument(bucketNumber.isEmpty(), "Bucket number provided by for table that is not bucketed");
         }
 
-        String fileName;
-        if (bucketNumber.isPresent()) {
-            fileName = computeBucketedFileName(queryId, bucketNumber.getAsInt());
-        }
-        else {
-            fileName = queryId + "_" + randomUUID();
-        }
+        String fileName = computeFileName(bucketNumber);
 
         List<String> partitionValues = createPartitionValues(partitionColumnTypes, partitionColumns, position);
 
@@ -297,7 +294,7 @@ public class HiveWriterFactory
         Properties schema;
         WriteInfo writeInfo;
         StorageFormat outputStorageFormat;
-        if (!partition.isPresent()) {
+        if (partition.isEmpty()) {
             if (table == null) {
                 // Write to: a new partition in a new partitioned table,
                 //           or a new unpartitioned table.
@@ -312,7 +309,7 @@ public class HiveWriterFactory
                         .map(HiveTypeName::toString)
                         .collect(joining(":")));
 
-                if (!partitionName.isPresent()) {
+                if (partitionName.isEmpty()) {
                     // new unpartitioned table
                     writeInfo = locationService.getTableWriteInfo(locationHandle, false);
                 }
@@ -429,7 +426,7 @@ public class HiveWriterFactory
             }
         }
 
-        schema.putAll(additionalTableParameters);
+        additionalTableParameters.forEach(schema::setProperty);
 
         validateSchema(partitionName, schema);
 
@@ -437,9 +434,9 @@ public class HiveWriterFactory
 
         Path path = new Path(writeInfo.getWritePath(), fileNameWithExtension);
 
-        HiveFileWriter hiveFileWriter = null;
+        FileWriter hiveFileWriter = null;
         for (HiveFileWriterFactory fileWriterFactory : fileWriterFactories) {
-            Optional<HiveFileWriter> fileWriter = fileWriterFactory.createFileWriter(
+            Optional<FileWriter> fileWriter = fileWriterFactory.createFileWriter(
                     path,
                     dataColumns.stream()
                             .map(DataColumn::getName)
@@ -473,9 +470,9 @@ public class HiveWriterFactory
         Consumer<HiveWriter> onCommit = hiveWriter -> {
             Optional<Long> size;
             try {
-                size = Optional.of(hdfsEnvironment.getFileSystem(session.getUser(), path, conf).getFileStatus(path).getLen());
+                size = Optional.of(hiveWriter.getWrittenBytes());
             }
-            catch (IOException | RuntimeException e) {
+            catch (RuntimeException e) {
                 // Do not fail the query if file system is not available
                 size = Optional.empty();
             }
@@ -536,7 +533,7 @@ public class HiveWriterFactory
                     sortFields,
                     sortOrders,
                     pageSorter,
-                    (fs, p) -> createOrcDataSink(session, fs, p));
+                    OrcFileWriterFactory::createOrcDataSink);
         }
 
         return new HiveWriter(
@@ -561,12 +558,12 @@ public class HiveWriterFactory
                 .collect(toMap(DataColumn::getName, identity()));
         Set<String> missingColumns = Sets.difference(inputColumnMap.keySet(), new HashSet<>(fileColumnNames));
         if (!missingColumns.isEmpty()) {
-            throw new PrestoException(NOT_FOUND, format("Table %s.%s does not have columns %s", schema, tableName, missingColumns));
+            throw new PrestoException(HIVE_INVALID_METADATA, format("Table '%s.%s' does not have columns %s", schemaName, tableName, missingColumns));
         }
         if (fileColumnNames.size() != fileColumnHiveTypes.size()) {
             throw new PrestoException(HIVE_INVALID_METADATA, format(
                     "Partition '%s' in table '%s.%s' has mismatched metadata for column names and types",
-                    partitionName,
+                    partitionName.orElse(""), // TODO: this should exist
                     schemaName,
                     tableName));
         }
@@ -589,17 +586,47 @@ public class HiveWriterFactory
                         schemaName,
                         tableName,
                         inputHiveType,
-                        partitionName,
+                        partitionName.orElse(""), // TODO: this should exist
                         columnName,
                         fileColumnHiveType));
             }
         }
     }
 
-    public static String computeBucketedFileName(String queryId, int bucket)
+    private String computeFileName(OptionalInt bucketNumber)
+    {
+        // Currently CTAS for transactional tables in Presto creates non-transactional ("original") files.
+        // Hive requires "original" files of transactional tables to conform to the following naming pattern:
+        //
+        // For bucketed tables we drop query id from file names and just leave <bucketId>_0
+        // For non bucketed tables we use 000000_<uuid_as_number>
+
+        if (bucketNumber.isPresent()) {
+            if (isCreateTransactionalTable) {
+                return computeBucketedFileName(Optional.empty(), bucketNumber.getAsInt());
+            }
+            return computeBucketedFileName(Optional.of(queryId), bucketNumber.getAsInt());
+        }
+
+        if (isCreateTransactionalTable) {
+            String paddedBucket = Strings.padStart("0", BUCKET_NUMBER_PADDING, '0');
+            UUID uuid = randomUUID();
+            return format("0%s_%s%s",
+                    paddedBucket,
+                    Long.toUnsignedString(uuid.getLeastSignificantBits()),
+                    Long.toUnsignedString(uuid.getMostSignificantBits()));
+        }
+
+        return queryId + "_" + randomUUID();
+    }
+
+    public static String computeBucketedFileName(Optional<String> queryId, int bucket)
     {
         String paddedBucket = Strings.padStart(Integer.toString(bucket), BUCKET_NUMBER_PADDING, '0');
-        return format("0%s_0_%s", paddedBucket, queryId);
+        if (queryId.isPresent()) {
+            return format("0%s_0_%s", paddedBucket, queryId.get());
+        }
+        return format("0%s_0", paddedBucket);
     }
 
     public static String getFileExtension(JobConf conf, StorageFormat storageFormat)

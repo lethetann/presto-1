@@ -260,7 +260,7 @@ public final class StreamPropertyDerivations
 
             // Globally constant assignments
             Set<ColumnHandle> constants = new HashSet<>();
-            extractFixedValues(metadata.getTableProperties(session, node.getTable()).getPredicate())
+            extractFixedValues(layout.getPredicate())
                     .orElse(ImmutableMap.of())
                     .entrySet().stream()
                     .filter(entry -> !entry.getValue().isNull())  // TODO consider allowing nulls
@@ -533,7 +533,7 @@ public final class StreamPropertyDerivations
         public StreamProperties visitTopN(TopNNode node, List<StreamProperties> inputProperties)
         {
             // Partial TopN doesn't guarantee that stream is ordered
-            if (node.getStep().equals(TopNNode.Step.PARTIAL)) {
+            if (node.getStep() == TopNNode.Step.PARTIAL) {
                 return Iterables.getOnlyElement(inputProperties);
             }
             return StreamProperties.ordered();
@@ -698,7 +698,7 @@ public final class StreamPropertyDerivations
 
         public boolean isPartitionedOn(Iterable<Symbol> columns)
         {
-            if (!partitioningColumns.isPresent()) {
+            if (partitioningColumns.isEmpty()) {
                 return false;
             }
 
@@ -736,7 +736,7 @@ public final class StreamPropertyDerivations
                         ImmutableList.Builder<Symbol> newPartitioningColumns = ImmutableList.builder();
                         for (Symbol partitioningColumn : partitioning) {
                             Optional<Symbol> translated = translator.apply(partitioningColumn);
-                            if (!translated.isPresent()) {
+                            if (translated.isEmpty()) {
                                 return Optional.empty();
                             }
                             newPartitioningColumns.add(translated.get());
@@ -767,7 +767,7 @@ public final class StreamPropertyDerivations
                 return false;
             }
             StreamProperties other = (StreamProperties) obj;
-            return Objects.equals(this.distribution, other.distribution) &&
+            return this.distribution == other.distribution &&
                     Objects.equals(this.partitioningColumns, other.partitioningColumns);
         }
 

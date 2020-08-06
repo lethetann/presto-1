@@ -15,12 +15,14 @@ package io.prestosql.orc;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import io.prestosql.orc.OrcWriteValidation.OrcWriteValidationMode;
 import io.prestosql.orc.metadata.Footer;
 import io.prestosql.orc.metadata.OrcMetadataReader;
+import io.prestosql.orc.metadata.OrcType;
 import io.prestosql.orc.metadata.Stream;
 import io.prestosql.orc.metadata.StripeFooter;
 import io.prestosql.orc.metadata.StripeInformation;
@@ -29,11 +31,13 @@ import io.prestosql.orc.stream.OrcInputStream;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.block.BlockBuilder;
+import io.prestosql.spi.type.Type;
 import org.testng.annotations.Test;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Optional;
 
 import static io.airlift.testing.Assertions.assertGreaterThanOrEqual;
@@ -58,17 +62,23 @@ public class TestOrcWriter
     {
         for (OrcWriteValidationMode validationMode : OrcWriteValidationMode.values()) {
             TempFile tempFile = new TempFile();
+
+            List<String> columnNames = ImmutableList.of("test1", "test2", "test3", "test4", "test5");
+            List<Type> types = ImmutableList.of(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR);
+
             OrcWriter writer = new OrcWriter(
                     new OutputStreamOrcDataSink(new FileOutputStream(tempFile.getFile())),
                     ImmutableList.of("test1", "test2", "test3", "test4", "test5"),
-                    ImmutableList.of(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR),
+                    types,
+                    OrcType.createRootOrcType(columnNames, types),
                     NONE,
                     new OrcWriterOptions()
-                            .withStripeMinSize(new DataSize(0, MEGABYTE))
-                            .withStripeMaxSize(new DataSize(32, MEGABYTE))
+                            .withStripeMinSize(DataSize.of(0, MEGABYTE))
+                            .withStripeMaxSize(DataSize.of(32, MEGABYTE))
                             .withStripeMaxRowCount(ORC_STRIPE_SIZE)
                             .withRowGroupMaxRowCount(ORC_ROW_GROUP_SIZE)
-                            .withDictionaryMaxMemory(new DataSize(32, MEGABYTE)),
+                            .withDictionaryMaxMemory(DataSize.of(32, MEGABYTE))
+                            .withBloomFilterColumns(ImmutableSet.copyOf(columnNames)),
                     false,
                     ImmutableMap.of(),
                     HIVE_STORAGE_TIME_ZONE,

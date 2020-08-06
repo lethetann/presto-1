@@ -38,6 +38,7 @@ public final class DateTimeTestingUtils
     private DateTimeTestingUtils() {}
 
     public static SqlTimestamp sqlTimestampOf(
+            int precision,
             int year,
             int monthOfYear,
             int dayOfMonth,
@@ -48,6 +49,7 @@ public final class DateTimeTestingUtils
             Session session)
     {
         return sqlTimestampOf(
+                precision,
                 year,
                 monthOfYear,
                 dayOfMonth,
@@ -61,6 +63,7 @@ public final class DateTimeTestingUtils
     }
 
     public static SqlTimestamp sqlTimestampOf(
+            int precision,
             int year,
             int monthOfYear,
             int dayOfMonth,
@@ -73,36 +76,49 @@ public final class DateTimeTestingUtils
             ConnectorSession session)
     {
         if (session.isLegacyTimestamp()) {
-            return new SqlTimestamp(new DateTime(year, monthOfYear, dayOfMonth, hourOfDay, minuteOfHour, secondOfMinute, millisOfSecond, baseZone).getMillis(), timestampZone);
+            return SqlTimestamp.legacyFromMillis(precision, new DateTime(year, monthOfYear, dayOfMonth, hourOfDay, minuteOfHour, secondOfMinute, millisOfSecond, baseZone).getMillis(), timestampZone);
         }
-        return sqlTimestampOf(LocalDateTime.of(year, monthOfYear, dayOfMonth, hourOfDay, minuteOfHour, secondOfMinute, millisToNanos(millisOfSecond)));
+        return sqlTimestampOf(precision, LocalDateTime.of(year, monthOfYear, dayOfMonth, hourOfDay, minuteOfHour, secondOfMinute, millisToNanos(millisOfSecond)));
     }
 
     /**
      * Constructs standard (non-legacy) TIMESTAMP value corresponding to argument
      */
-    public static SqlTimestamp sqlTimestampOf(LocalDateTime dateTime)
+    public static SqlTimestamp sqlTimestampOf(int precision, LocalDateTime dateTime)
     {
-        return new SqlTimestamp(DAYS.toMillis(dateTime.toLocalDate().toEpochDay()) + NANOSECONDS.toMillis(dateTime.toLocalTime().toNanoOfDay()));
+        return SqlTimestamp.fromMillis(precision, DAYS.toMillis(dateTime.toLocalDate().toEpochDay()) + NANOSECONDS.toMillis(dateTime.toLocalTime().toNanoOfDay()));
     }
 
+    public static SqlTimestamp sqlTimestampOf(int precision, DateTime dateTime, Session session)
+    {
+        return sqlTimestampOf(precision, dateTime.getMillis(), session.toConnectorSession());
+    }
+
+    /**
+     * @deprecated Use {@link #sqlTimestampOf(int precision, DateTime dateTime, Session session)}
+     */
+    @Deprecated
     public static SqlTimestamp sqlTimestampOf(DateTime dateTime, Session session)
     {
-        return sqlTimestampOf(dateTime, session.toConnectorSession());
+        return sqlTimestampOf(3, dateTime.getMillis(), session.toConnectorSession());
     }
 
-    private static SqlTimestamp sqlTimestampOf(DateTime dateTime, ConnectorSession session)
-    {
-        return sqlTimestampOf(dateTime.getMillis(), session);
-    }
-
+    /**
+     * @deprecated Use {@link #sqlTimestampOf(int precision, long millis, ConnectorSession session)}
+     */
+    @Deprecated
     public static SqlTimestamp sqlTimestampOf(long millis, ConnectorSession session)
     {
+        return sqlTimestampOf(3, millis, session);
+    }
+
+    public static SqlTimestamp sqlTimestampOf(int precision, long millis, ConnectorSession session)
+    {
         if (session.isLegacyTimestamp()) {
-            return new SqlTimestamp(millis, session.getTimeZoneKey());
+            return SqlTimestamp.legacyFromMillis(precision, millis, session.getTimeZoneKey());
         }
         else {
-            return new SqlTimestamp(millis);
+            return SqlTimestamp.fromMillis(precision, millis);
         }
     }
 
@@ -113,13 +129,23 @@ public final class DateTimeTestingUtils
             int millisOfSecond,
             Session session)
     {
+        return sqlTimeOf(hourOfDay, minuteOfHour, secondOfMinute, millisOfSecond, session.toConnectorSession());
+    }
+
+    public static SqlTime sqlTimeOf(
+            int hourOfDay,
+            int minuteOfHour,
+            int secondOfMinute,
+            int millisOfSecond,
+            ConnectorSession session)
+    {
         LocalTime time = LocalTime.of(hourOfDay, minuteOfHour, secondOfMinute, millisToNanos(millisOfSecond));
         return sqlTimeOf(time, session);
     }
 
-    public static SqlTime sqlTimeOf(LocalTime time, Session session)
+    public static SqlTime sqlTimeOf(LocalTime time, ConnectorSession session)
     {
-        if (session.toConnectorSession().isLegacyTimestamp()) {
+        if (session.isLegacyTimestamp()) {
             long millisUtc = LocalDate.ofEpochDay(0)
                     .atTime(time)
                     .atZone(UTC)

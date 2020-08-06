@@ -1,14 +1,24 @@
-# Presto
-[![Build Status](https://github.com/prestosql/presto/workflows/CI/badge.svg)](https://github.com/prestosql/presto/actions?query=workflow%3ACI+event%3Apush+branch%3Amaster)
-
-Presto is a distributed SQL query engine for big data.
-
-See the [User Manual](https://prestosql.io/docs/current/) for deployment instructions and end user documentation.
+<p align="center">
+    <img alt="Presto Logo" src="presto-docs/src/main/resources/logo/web/main/white/Presto_Logo_WhiteBG-01.png" width="25%" />
+</p>
+<p align="center">Presto is a distributed SQL query engine for big data.</p>
+<p align="center">See the <a href="https://prestosql.io/docs/current/">User Manual</a> for deployment instructions and end user documentation.</p>
+<p align="center">
+   <a href="https://prestosql.io/download.html">
+       <img src="https://img.shields.io/maven-central/v/io.prestosql/presto-server.svg?label=Download" alt="Maven Central" />
+   </a>
+   <a href="https://prestosql.io/slack.html">
+       <img src="https://img.shields.io/static/v1?logo=slack&logoColor=959DA5&label=Slack&labelColor=333a41&message=join%20conversation&color=3AC358" alt="Presto Slack" />
+   </a>
+   <a href="https://www.starburstdata.com/oreilly-presto-guide-download">
+       <img src="https://img.shields.io/badge/Presto%3A%20The%20Definitive%20Guide-download-brightgreen" alt="Presto: The Definitive Guide book download" />
+   </a>
+</p>
 
 ## Requirements
 
 * Mac OS X or Linux
-* Java 8 Update 161 or higher (8u161+), 64-bit. Both Oracle JDK and OpenJDK are supported.
+* Java 11, 64-bit
 * Python 2.6+ (for running with the launcher script)
 
 ## Building Presto
@@ -32,17 +42,17 @@ After building Presto for the first time, you can load the project into your IDE
 After opening the project in IntelliJ, double check that the Java SDK is properly configured for the project:
 
 * Open the File menu and select Project Structure
-* In the SDKs section, ensure that a 1.8 JDK is selected (create one if none exist)
-* In the Project section, ensure the Project language level is set to 8.0 as Presto makes use of several Java 8 language features
+* In the SDKs section, ensure that JDK 11 is selected (create one if none exist)
+* In the Project section, ensure the Project language level is set to 8 (Presto does not yet use Java 11 language features)
 
 Presto comes with sample configuration that should work out-of-the-box for development. Use the following options to create a run configuration:
 
 * Main Class: `io.prestosql.server.PrestoServer`
-* VM Options: `-ea -XX:+UseG1GC -XX:G1HeapRegionSize=32M -XX:+UseGCOverheadLimit -XX:+ExplicitGCInvokesConcurrent -Xmx2G -Dconfig=etc/config.properties -Dlog.levels-file=etc/log.properties`
+* VM Options: `-ea -XX:+UseG1GC -XX:G1HeapRegionSize=32M -XX:+UseGCOverheadLimit -XX:+ExplicitGCInvokesConcurrent -Xmx2G -Dconfig=etc/config.properties -Dlog.levels-file=etc/log.properties -Djdk.attach.allowAttachSelf=true`
 * Working directory: `$MODULE_DIR$`
-* Use classpath of module: `presto-main`
+* Use classpath of module: `presto-server-main`
 
-The working directory should be the `presto-main` subdirectory. In IntelliJ, using `$MODULE_DIR$` accomplishes this automatically.
+The working directory should be the `presto-server-main` subdirectory. In IntelliJ, using `$MODULE_DIR$` accomplishes this automatically.
 
 Additionally, the Hive plugin must be configured with the location of your Hive metastore Thrift service. Add the following to the list of VM options, replacing `localhost:9083` with the correct host and port (or use the below value if you do not have a Hive metastore):
 
@@ -80,7 +90,7 @@ In the sample configuration, the Hive connector is mounted in the `hive` catalog
 We recommend you use IntelliJ as your IDE. The code style template for the project can be found in the [codestyle](https://github.com/airlift/codestyle) repository along with our general programming and Java guidelines. In addition to those you should also adhere to the following:
 
 * Alphabetize sections in the documentation source files (both in the table of contents files and other regular documentation files). In general, alphabetize methods/variables/sections if such ordering already exists in the surrounding code.
-* When appropriate, use the Java 8 stream API. However, note that the stream implementation does not perform well so avoid using it in inner loops or otherwise performance sensitive sections.
+* When appropriate, use the stream API. However, note that the stream implementation does not perform well so avoid using it in inner loops or otherwise performance sensitive sections.
 * Categorize errors when throwing exceptions. For example, PrestoException takes an error code as an argument, `PrestoException(HIVE_TOO_MANY_OPEN_PARTITIONS)`. This categorization lets you generate reports so you can monitor the frequency of various failures.
 * Ensure that all files have the appropriate license header; you can generate the license by running `mvn license:format`.
 * Consider using String formatting (printf style formatting using the Java `Formatter` class): `format("Session property %s is invalid: %s", name, value)` (note that `format()` should always be statically imported). Sometimes, if you only need to append something, consider using the `+` operator.
@@ -96,13 +106,20 @@ with some modifications.
 Enable the following inspections:
 
 - ``Java | Internationalization | Implicit usage of platform's default charset``,
+- ``Java | Control flow issues | Redundant 'else'`` (including ``Report when there are no more statements after the 'if' statement`` option),
 - ``Java | Class structure | Utility class is not 'final'``,
 - ``Java | Class structure | Utility class with 'public' constructor``,
 - ``Java | Class structure | Utility class without 'private' constructor``.
 
 Disable the following inspections:
 
+- ``Java | Performance | Call to 'Arrays.asList()' with too few arguments``,
 - ``Java | Abstraction issues | 'Optional' used as field or parameter type``.
+
+Enable errorprone ([Error Prone Installation#IDEA](https://errorprone.info/docs/installation#intellij-idea)):
+- Install ``Error Prone Compiler`` plugin from marketplace,
+- In ``Java Compiler`` tab, select ``Javac with error-prone`` as the compiler,
+- Update ``Additional command line parameters`` with ``-XepExcludedPaths:.*/target/generated-(|test-)sources/.* -XepDisableAllChecks -Xep:MissingOverride:ERROR ......`` (for current recommended list of command line parameters, see the top level ``pom.xml``, the definition of the ``errorprone-compiler-presto`` profile.
 
 ### Building the Web UI
 

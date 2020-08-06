@@ -33,6 +33,7 @@ import io.prestosql.spi.connector.ConnectorSplitManager;
 import io.prestosql.spi.connector.ConnectorTableHandle;
 import io.prestosql.spi.connector.ConnectorTransactionHandle;
 import io.prestosql.spi.connector.FixedPageSource;
+import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.transaction.IsolationLevel;
 import io.prestosql.testing.AbstractTestQueryFramework;
 import io.prestosql.testing.DistributedQueryRunner;
@@ -69,7 +70,7 @@ public class TestBeginQuery
                 .setCatalog("test")
                 .setSchema("default")
                 .build();
-        return new DistributedQueryRunner(session, 1);
+        return DistributedQueryRunner.builder(session).build();
     }
 
     @BeforeClass
@@ -213,7 +214,13 @@ public class TestBeginQuery
             return new ConnectorPageSourceProvider()
             {
                 @Override
-                public ConnectorPageSource createPageSource(ConnectorTransactionHandle transaction, ConnectorSession session, ConnectorSplit split, ConnectorTableHandle table, List<ColumnHandle> columns)
+                public ConnectorPageSource createPageSource(
+                        ConnectorTransactionHandle transaction,
+                        ConnectorSession session,
+                        ConnectorSplit split,
+                        ConnectorTableHandle table,
+                        List<ColumnHandle> columns,
+                        TupleDomain<ColumnHandle> dynamicFilter)
                 {
                     return new FixedPageSource(ImmutableList.of());
                 }

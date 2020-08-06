@@ -36,14 +36,6 @@ import static org.testng.Assert.assertTrue;
 public abstract class AbstractTestJoinQueries
         extends AbstractTestQueryFramework
 {
-    @Deprecated
-    protected AbstractTestJoinQueries(QueryRunnerSupplier supplier)
-    {
-        super(supplier);
-    }
-
-    protected AbstractTestJoinQueries() {}
-
     @Test
     public void testJoinWithMultiFieldGroupBy()
     {
@@ -835,13 +827,6 @@ public abstract class AbstractTestJoinQueries
         QueryTemplate.Parameter left = type.of("left");
         QueryTemplate.Parameter right = type.of("right");
         QueryTemplate.Parameter full = type.of("full");
-        for (QueryTemplate.Parameter joinType : ImmutableList.of(left, right, full)) {
-            for (String joinCondition : ImmutableList.of("x IN (VALUES 1)", "y in (VALUES 1)")) {
-                assertQueryFails(
-                        queryTemplate.replace(joinType, condition.of(joinCondition)),
-                        ".*IN with subquery predicate in join condition is not supported");
-            }
-        }
 
         assertQuery(
                 queryTemplate.replace(left, twoDuplicatedInSubqueriesCondition),
@@ -876,14 +861,6 @@ public abstract class AbstractTestJoinQueries
         assertQuery(
                 queryTemplate.replace(condition.of("(x+y in (VALUES 4,5)) AND (x in (VALUES 4,5)) != (y in (VALUES 4,5))")),
                 "VALUES (4,1)");
-
-        for (QueryTemplate.Parameter joinType : type.of("left", "right", "full")) {
-            assertQueryFails(
-                    queryTemplate.replace(
-                            joinType,
-                            condition.of("(x+y in (VALUES 4,5)) AND (x in (VALUES 4,5)) != (y in (VALUES 4,5))")),
-                    ".*IN with subquery predicate in join condition is not supported");
-        }
     }
 
     @Test
@@ -897,7 +874,7 @@ public abstract class AbstractTestJoinQueries
                 condition);
 
         queryTemplate.replaceAll(
-                (query) -> assertQueryFails(query, "line .*: .* is not supported"),
+                (query) -> assertQueryFails(query, "line .*: Reference to column 'x' from outer scope not allowed in this context"),
                 ImmutableList.of(type.of("left"), type.of("right"), type.of("full")),
                 ImmutableList.of(
                         condition.of("EXISTS(SELECT 1 WHERE x = y)"),
@@ -2254,6 +2231,55 @@ public abstract class AbstractTestJoinQueries
         assertQuery(
                 noJoinReordering(),
                 "WITH small_part AS (SELECT * FROM part WHERE name = 'a') SELECT lineitem.orderkey FROM small_part RIGHT JOIN lineitem ON  small_part.partkey = lineitem.partkey");
+    }
+
+    @Test
+    public void testEquijoinOnDifferentTypesWithFilter()
+    {
+        // Exercises a join on integer vs bigint with a filter on the integer column that can be pushed down
+        // below the join. Needs to run in distributed mode to reproduce the issue (i.e., with AddExchanges enabled)
+        assertQuery("" +
+                "WITH" +
+                "   t1 AS (SELECT linenumber AS id1 FROM lineitem), " +
+                "   t2 AS (SELECT nationkey AS id2 FROM nation) " +
+                "SELECT id1 " +
+                "FROM t1 " +
+                "JOIN t2 ON id1 = id2 " +
+                "WHERE id1 = 10");
+
+        assertQuery("" +
+                "WITH " +
+                "   t1 AS (SELECT linenumber AS id1 FROM lineitem), " +
+                "   t2 AS (SELECT nationkey AS id2 FROM nation), " +
+                "   t3 AS (SELECT linenumber AS id3 FROM lineitem), " +
+                "   t4 AS (SELECT nationkey AS id4 FROM nation) " +
+                "SELECT id3 " +
+                "FROM (SELECT * FROM t1 JOIN t2 ON id1 = id2) u " +
+                "JOIN (SELECT * FROM t3 JOIN t4 ON id3 = id4) v " +
+                "ON id1 = id4 " +
+                "WHERE id3 = 10");
+    }
+
+    @Test
+    public void testMultiJoinWithEligibleForDynamicFiltering()
+    {
+        assertQuery("" +
+                        "SELECT customer.name, lineitem.partkey " +
+                        "FROM lineitem " +
+                        "LEFT JOIN orders ON lineitem.orderkey = orders.orderkey " + // with dynamic filters enabled, gets converted to INNER CROSS JOIN
+                        "LEFT JOIN customer ON orders.custkey = customer.custkey " + // gets converted to INNER join
+                        "WHERE lineitem.orderkey = 31718 " +
+                        "AND customer.name >= 'Customer#000001463' ",
+                "VALUES ('Customer#000001471', 474), ('Customer#000001471', 1969), ('Customer#000001471', 32)");
+
+        assertQuery("" +
+                        "SELECT count(*) " +
+                        "FROM lineitem " +
+                        "LEFT JOIN orders ON lineitem.orderkey = orders.orderkey " + // with dynamic filters enabled, gets converted to INNER CROSS JOIN
+                        "LEFT JOIN customer ON orders.custkey = customer.custkey " + // gets converted to INNER join
+                        "WHERE lineitem.orderkey = 31718 " +
+                        "AND customer.name >= 'Customer#000001463' ",
+                "VALUES 3");
     }
 
     private Session noJoinReordering()

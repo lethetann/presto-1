@@ -13,40 +13,47 @@
  */
 package io.prestosql.testing;
 
+import io.prestosql.Session;
+import io.prestosql.cost.PlanNodeStatsEstimate;
+import io.prestosql.execution.warnings.WarningCollector;
+import io.prestosql.sql.planner.Plan;
+import io.prestosql.sql.planner.assertions.PlanMatchPattern;
+import io.prestosql.sql.planner.plan.TableScanNode;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
+import static io.prestosql.SystemSessionProperties.IGNORE_STATS_CALCULATOR_FAILURES;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
+import static io.prestosql.sql.planner.assertions.PlanAssert.assertPlan;
 import static io.prestosql.testing.QueryAssertions.assertContains;
+import static io.prestosql.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.prestosql.testing.assertions.Assert.assertEquals;
+import static io.prestosql.transaction.TransactionBuilder.transaction;
+import static java.lang.String.format;
+import static java.lang.String.join;
+import static java.util.Collections.nCopies;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.testng.Assert.assertTrue;
 
+/**
+ * Generic test for connectors exercising connector's read capabilities.
+ * This is also the base class for connector-specific tests (not generic),
+ * regardless whether they exercise read-only or read-write capabilities.
+ *
+ * @see AbstractTestDistributedQueries
+ */
 public abstract class AbstractTestIntegrationSmokeTest
         extends AbstractTestQueryFramework
 {
-    @Deprecated
-    protected AbstractTestIntegrationSmokeTest(QueryRunnerSupplier supplier)
-    {
-        super(supplier);
-    }
-
-    protected AbstractTestIntegrationSmokeTest() {}
-
-    protected boolean isDateTypeSupported()
-    {
-        return true;
-    }
-
-    protected boolean isParameterizedVarcharSupported()
-    {
-        return true;
-    }
-
+    /**
+     * Ensure the tests are run with {@link DistributedQueryRunner}. E.g. {@link LocalQueryRunner} takes some
+     * shortcuts, not exercising certain aspects.
+     */
     @Test
-    public void testAggregateSingleColumn()
+    public void ensureDistributedQueryRunner()
     {
-        assertQuery("SELECT SUM(orderkey) FROM orders");
-        assertQuery("SELECT SUM(totalprice) FROM orders");
-        assertQuery("SELECT MAX(comment) FROM orders");
+        assertThat(getQueryRunner().getNodeCount()).as("query runner node count")
+                .isGreaterThanOrEqualTo(3);
     }
 
     @Test
@@ -56,27 +63,106 @@ public abstract class AbstractTestIntegrationSmokeTest
     }
 
     @Test
-    public void testCountAll()
+    public void testAggregation()
     {
-        assertQuery("SELECT COUNT(*) FROM orders");
+        assertQuery("SELECT sum(orderkey) FROM orders");
+        assertQuery("SELECT sum(totalprice) FROM orders");
+        assertQuery("SELECT max(comment) FROM nation");
+
+        assertQuery("SELECT count(*) FROM orders");
+        assertQuery("SELECT count(*) FROM orders WHERE orderkey > 10");
+        assertQuery("SELECT count(*) FROM (SELECT * FROM orders LIMIT 10)");
+        assertQuery("SELECT count(*) FROM (SELECT * FROM orders WHERE orderkey > 10 LIMIT 10)");
+
+        assertQuery("SELECT DISTINCT regionkey FROM nation");
+        assertQuery("SELECT regionkey FROM nation GROUP BY regionkey");
+
+        // TODO support aggregation pushdown with GROUPING SETS
+        assertQuery(
+                "SELECT regionkey, nationkey FROM nation GROUP BY GROUPING SETS ((regionkey), (nationkey))",
+                "SELECT NULL, nationkey FROM nation " +
+                        "UNION ALL SELECT DISTINCT regionkey, NULL FROM nation");
+        assertQuery(
+                "SELECT regionkey, nationkey, count(*) FROM nation GROUP BY GROUPING SETS ((), (regionkey), (nationkey), (regionkey, nationkey))",
+                "SELECT NULL, NULL, count(*) FROM nation " +
+                        "UNION ALL SELECT NULL, nationkey, 1 FROM nation " +
+                        "UNION ALL SELECT regionkey, NULL, count(*) FROM nation GROUP BY regionkey " +
+                        "UNION ALL SELECT regionkey, nationkey, 1 FROM nation");
+
+        assertQuery("SELECT count(regionkey) FROM nation");
+        assertQuery("SELECT count(DISTINCT regionkey) FROM nation");
+        assertQuery("SELECT regionkey, count(*) FROM nation GROUP BY regionkey");
+
+        assertQuery("SELECT min(regionkey), max(regionkey) FROM nation");
+        assertQuery("SELECT min(DISTINCT regionkey), max(DISTINCT regionkey) FROM nation");
+        assertQuery("SELECT regionkey, min(regionkey), min(name), max(regionkey), max(name) FROM nation GROUP BY regionkey");
+
+        assertQuery("SELECT sum(regionkey) FROM nation");
+        assertQuery("SELECT sum(DISTINCT regionkey) FROM nation");
+        assertQuery("SELECT regionkey, sum(regionkey) FROM nation GROUP BY regionkey");
+
+        assertQuery(
+                "SELECT avg(nationkey) FROM nation",
+                "SELECT avg(CAST(nationkey AS double)) FROM nation");
+        assertQuery(
+                "SELECT avg(DISTINCT nationkey) FROM nation",
+                "SELECT avg(DISTINCT CAST(nationkey AS double)) FROM nation");
+        assertQuery(
+                "SELECT regionkey, avg(nationkey) FROM nation GROUP BY regionkey",
+                "SELECT regionkey, avg(CAST(nationkey AS double)) FROM nation GROUP BY regionkey");
     }
 
     @Test
     public void testExactPredicate()
     {
-        assertQuery("SELECT * FROM orders WHERE orderkey = 10");
+        assertQueryReturnsEmptyResult("SELECT * FROM orders WHERE orderkey = 10");
+
+        // filtered column is selected
+        assertQuery("SELECT custkey, orderkey FROM orders WHERE orderkey = 32", "VALUES (1301, 32)");
+
+        // filtered column is not selected
+        assertQuery("SELECT custkey FROM orders WHERE orderkey = 32", "VALUES (1301)");
     }
 
     @Test
     public void testInListPredicate()
     {
-        assertQuery("SELECT * FROM orders WHERE orderkey IN (10, 11, 20, 21)");
+        assertQueryReturnsEmptyResult("SELECT * FROM orders WHERE orderkey IN (10, 11, 20, 21)");
+
+        // filtered column is selected
+        assertQuery("SELECT custkey, orderkey FROM orders WHERE orderkey IN (7, 10, 32, 33)", "VALUES (392, 7), (1301, 32), (670, 33)");
+
+        // filtered column is not selected
+        assertQuery("SELECT custkey FROM orders WHERE orderkey IN (7, 10, 32, 33)", "VALUES (392), (1301), (670)");
     }
 
     @Test
     public void testIsNullPredicate()
     {
-        assertQuery("SELECT * FROM orders WHERE orderkey = 10 OR orderkey IS NULL");
+        assertQueryReturnsEmptyResult("SELECT * FROM orders WHERE orderkey IS NULL");
+        assertQueryReturnsEmptyResult("SELECT * FROM orders WHERE orderkey = 10 OR orderkey IS NULL");
+
+        // filtered column is selected
+        assertQuery("SELECT custkey, orderkey FROM orders WHERE orderkey = 32 OR orderkey IS NULL", "VALUES (1301, 32)");
+
+        // filtered column is not selected
+        assertQuery("SELECT custkey FROM orders WHERE orderkey = 32 OR orderkey IS NULL", "VALUES (1301)");
+    }
+
+    @Test
+    public void testLikePredicate()
+    {
+        // filtered column is not selected
+        assertQuery("SELECT orderkey FROM orders WHERE orderpriority LIKE '5-L%'");
+
+        // filtered column is selected
+        assertQuery("SELECT orderkey, orderpriority FROM orders WHERE orderpriority LIKE '5-L%'");
+
+        // filtered column is not selected
+        assertQuery("SELECT orderkey FROM orders WHERE orderpriority LIKE '5-L__'");
+
+        // filtered column is selected
+        assertQuery("SELECT orderkey, orderpriority FROM orders WHERE orderpriority LIKE '5-L__'");
     }
 
     @Test
@@ -106,9 +192,52 @@ public abstract class AbstractTestIntegrationSmokeTest
     }
 
     @Test
+    public void testConcurrentScans()
+    {
+        String unionMultipleTimes = join(" UNION ALL ", nCopies(25, "SELECT * FROM orders"));
+        assertQuery("SELECT sum(if(rand() >= 0, orderkey)) FROM (" + unionMultipleTimes + ")", "VALUES 11246812500");
+    }
+
+    @Test
     public void testSelectAll()
     {
         assertQuery("SELECT * FROM orders");
+    }
+
+    /**
+     * Test interactions between optimizer (including CBO) and connector metadata APIs.
+     */
+    @Test
+    public void testJoin()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(IGNORE_STATS_CALCULATOR_FAILURES, "false")
+                .build();
+
+        // 2 inner joins, eligible for join reodering
+        assertQuery(
+                session,
+                "SELECT c.name, n.name, r.name " +
+                        "FROM nation n " +
+                        "JOIN customer c ON c.nationkey = n.nationkey " +
+                        "JOIN region r ON n.regionkey = r.regionkey");
+
+        // 2 inner joins, eligible for join reodering, where one table has a filter
+        assertQuery(
+                session,
+                "SELECT c.name, n.name, r.name " +
+                        "FROM nation n " +
+                        "JOIN customer c ON c.nationkey = n.nationkey " +
+                        "JOIN region r ON n.regionkey = r.regionkey " +
+                        "WHERE n.name = 'ARGENTINA'");
+
+        // 2 inner joins, eligible for join reodering, on top of aggregation
+        assertQuery(
+                session,
+                "SELECT c.name, n.name, n.count, r.name " +
+                        "FROM (SELECT name, regionkey, nationkey, count(*) count FROM nation GROUP BY name, regionkey, nationkey) n " +
+                        "JOIN customer c ON c.nationkey = n.nationkey " +
+                        "JOIN region r ON n.regionkey = r.regionkey");
     }
 
     @Test
@@ -135,8 +264,102 @@ public abstract class AbstractTestIntegrationSmokeTest
     @Test
     public void testDescribeTable()
     {
-        MaterializedResult actualColumns = computeActual("DESC orders").toTestTypes();
-        assertEquals(actualColumns, getExpectedOrdersTableDescription(isDateTypeSupported(), isParameterizedVarcharSupported()));
+        MaterializedResult expectedColumns = MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+                .row("orderkey", "bigint", "", "")
+                .row("custkey", "bigint", "", "")
+                .row("orderstatus", "varchar(1)", "", "")
+                .row("totalprice", "double", "", "")
+                .row("orderdate", "date", "", "")
+                .row("orderpriority", "varchar(15)", "", "")
+                .row("clerk", "varchar(15)", "", "")
+                .row("shippriority", "integer", "", "")
+                .row("comment", "varchar(79)", "", "")
+                .build();
+        MaterializedResult actualColumns = computeActual("DESCRIBE orders");
+        assertEquals(actualColumns, expectedColumns);
+    }
+
+    @Test
+    public void testExplainAnalyze()
+    {
+        assertExplainAnalyze("EXPLAIN ANALYZE SELECT * FROM orders");
+        assertExplainAnalyze("EXPLAIN ANALYZE SELECT count(*), clerk FROM orders GROUP BY clerk");
+        assertExplainAnalyze(
+                "EXPLAIN ANALYZE SELECT x + y FROM (" +
+                        "   SELECT orderdate, COUNT(*) x FROM orders GROUP BY orderdate) a JOIN (" +
+                        "   SELECT orderdate, COUNT(*) y FROM orders GROUP BY orderdate) b ON a.orderdate = b.orderdate");
+        assertExplainAnalyze("EXPLAIN ANALYZE SELECT count(*), clerk FROM orders GROUP BY clerk UNION ALL SELECT sum(orderkey), clerk FROM orders GROUP BY clerk");
+
+        assertExplainAnalyze("EXPLAIN ANALYZE SHOW COLUMNS FROM orders");
+        assertExplainAnalyze("EXPLAIN ANALYZE EXPLAIN SELECT count(*) FROM orders");
+        assertExplainAnalyze("EXPLAIN ANALYZE EXPLAIN ANALYZE SELECT count(*) FROM orders");
+        assertExplainAnalyze("EXPLAIN ANALYZE SHOW FUNCTIONS");
+        assertExplainAnalyze("EXPLAIN ANALYZE SHOW TABLES");
+        assertExplainAnalyze("EXPLAIN ANALYZE SHOW SCHEMAS");
+        assertExplainAnalyze("EXPLAIN ANALYZE SHOW CATALOGS");
+        assertExplainAnalyze("EXPLAIN ANALYZE SHOW SESSION");
+    }
+
+    @Test
+    public void testExplainAnalyzeVerbose()
+    {
+        assertExplainAnalyze("EXPLAIN ANALYZE VERBOSE SELECT * FROM orders");
+        assertExplainAnalyze("EXPLAIN ANALYZE VERBOSE SELECT rank() OVER (PARTITION BY orderkey ORDER BY clerk DESC) FROM orders");
+        assertExplainAnalyze("EXPLAIN ANALYZE VERBOSE SELECT rank() OVER (PARTITION BY orderkey ORDER BY clerk DESC) FROM orders WHERE orderkey < 0");
+    }
+
+    protected void assertExplainAnalyze(@Language("SQL") String query)
+    {
+        String value = (String) computeActual(query).getOnlyValue();
+
+        assertTrue(value.matches("(?s:.*)CPU:.*, Input:.*, Output(?s:.*)"), format("Expected output to contain \"CPU:.*, Input:.*, Output\", but it is %s", value));
+
+        // TODO: check that rendered plan is as expected, once stats are collected in a consistent way
+        // assertTrue(value.contains("Cost: "), format("Expected output to contain \"Cost: \", but it is %s", value));
+    }
+
+    @Test
+    public void testTableSampleSystem()
+    {
+        MaterializedResult fullSample = computeActual("SELECT orderkey FROM orders TABLESAMPLE SYSTEM (100)");
+        MaterializedResult emptySample = computeActual("SELECT orderkey FROM orders TABLESAMPLE SYSTEM (0)");
+        MaterializedResult randomSample = computeActual("SELECT orderkey FROM orders TABLESAMPLE SYSTEM (50)");
+        MaterializedResult all = computeActual("SELECT orderkey FROM orders");
+
+        assertContains(all, fullSample);
+        assertEquals(emptySample.getMaterializedRows().size(), 0);
+        assertTrue(all.getMaterializedRows().size() >= randomSample.getMaterializedRows().size());
+    }
+
+    @Test
+    public void testTableSampleWithFiltering()
+    {
+        MaterializedResult emptySample = computeActual("SELECT DISTINCT orderkey, orderdate FROM orders TABLESAMPLE SYSTEM (99) WHERE orderkey BETWEEN 0 AND 0");
+        MaterializedResult halfSample = computeActual("SELECT DISTINCT orderkey, orderdate FROM orders TABLESAMPLE SYSTEM (50) WHERE orderkey BETWEEN 0 AND 9999999999");
+        MaterializedResult all = computeActual("SELECT orderkey, orderdate FROM orders");
+
+        assertEquals(emptySample.getMaterializedRows().size(), 0);
+        // Assertions need to be loose here because SYSTEM sampling random selects data on split boundaries. In this case either all the data will be selected, or
+        // none of it. Sampling with a 100% ratio is ignored, so that also cannot be used to guarantee results.
+        assertTrue(all.getMaterializedRows().size() >= halfSample.getMaterializedRows().size());
+    }
+
+    @Test
+    public void testShowCreateTable()
+    {
+        assertThat((String) computeActual("SHOW CREATE TABLE orders").getOnlyValue())
+                // If the connector reports additional column properties, the expected value needs to be adjusted in the test subclass
+                .matches("CREATE TABLE \\w+\\.\\w+\\.orders \\Q(\n" +
+                        "   orderkey bigint,\n" +
+                        "   custkey bigint,\n" +
+                        "   orderstatus varchar(1),\n" +
+                        "   totalprice double,\n" +
+                        "   orderdate date,\n" +
+                        "   orderpriority varchar(15),\n" +
+                        "   clerk varchar(15),\n" +
+                        "   shippriority integer,\n" +
+                        "   comment varchar(79)\n" +
+                        ")");
     }
 
     @Test
@@ -154,6 +377,19 @@ public abstract class AbstractTestIntegrationSmokeTest
                         "WHERE table_catalog = '" + catalog + "' AND table_schema LIKE '" + schema + "' AND table_name LIKE '%orders'",
                 "VALUES 'orders'");
         assertQuery("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'something_else'", "SELECT '' WHERE false");
+
+        assertQuery(
+                "SELECT DISTINCT table_name FROM information_schema.tables WHERE table_schema = 'information_schema' OR rand() = 42 ORDER BY 1",
+                "VALUES " +
+                        "('applicable_roles'), " +
+                        "('columns'), " +
+                        "('enabled_roles'), " +
+                        "('role_authorization_descriptors'), " +
+                        "('roles'), " +
+                        "('schemata'), " +
+                        "('table_privileges'), " +
+                        "('tables'), " +
+                        "('views')");
     }
 
     @Test
@@ -191,56 +427,43 @@ public abstract class AbstractTestIntegrationSmokeTest
         assertQuery("SELECT table_name, column_name FROM information_schema.columns WHERE table_catalog = '" + catalog + "' AND table_schema = '" + schema + "' AND table_name LIKE '_rders'", ordersTableWithColumns);
         assertQuerySucceeds("SELECT * FROM information_schema.columns WHERE table_catalog = '" + catalog + "' AND table_name LIKE '%'");
         assertQuery("SELECT column_name FROM information_schema.columns WHERE table_catalog = 'something_else'", "SELECT '' WHERE false");
+
+        assertQuery(
+                "SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema = 'information_schema' OR rand() = 42 ORDER BY 1",
+                "VALUES " +
+                        "('applicable_roles'), " +
+                        "('columns'), " +
+                        "('enabled_roles'), " +
+                        "('role_authorization_descriptors'), " +
+                        "('roles'), " +
+                        "('schemata'), " +
+                        "('table_privileges'), " +
+                        "('tables'), " +
+                        "('views')");
     }
 
-    @Test
-    public void testDuplicatedRowCreateTable()
+    protected void assertAggregationPushedDown(@Language("SQL") String sql)
     {
-        assertQueryFails("CREATE TABLE test (a integer, a integer)",
-                "line 1:31: Column name 'a' specified more than once");
-        assertQueryFails("CREATE TABLE test (a integer, orderkey integer, LIKE orders INCLUDING PROPERTIES)",
-                "line 1:49: Column name 'orderkey' specified more than once");
+        String catalog = getSession().getCatalog().orElseThrow();
+        Session withoutPushdown = Session.builder(getSession())
+                .setCatalogSessionProperty(catalog, "allow_aggregation_pushdown", "false")
+                .build();
 
-        assertQueryFails("CREATE TABLE test (a integer, A integer)",
-                "line 1:31: Column name 'A' specified more than once");
-        assertQueryFails("CREATE TABLE test (a integer, OrderKey integer, LIKE orders INCLUDING PROPERTIES)",
-                "line 1:49: Column name 'orderkey' specified more than once");
-    }
+        MaterializedResult actualResults = computeActual(sql);
+        MaterializedResult expectedResults = computeActual(withoutPushdown, sql);
+        assertEqualsIgnoreOrder(actualResults.getMaterializedRows(), expectedResults.getMaterializedRows());
 
-    private MaterializedResult getExpectedOrdersTableDescription(boolean dateSupported, boolean parametrizedVarchar)
-    {
-        String orderDateType;
-        if (dateSupported) {
-            orderDateType = "date";
-        }
-        else {
-            orderDateType = "varchar";
-        }
-        if (parametrizedVarchar) {
-            return MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                    .row("orderkey", "bigint", "", "")
-                    .row("custkey", "bigint", "", "")
-                    .row("orderstatus", "varchar(1)", "", "")
-                    .row("totalprice", "double", "", "")
-                    .row("orderdate", orderDateType, "", "")
-                    .row("orderpriority", "varchar(15)", "", "")
-                    .row("clerk", "varchar(15)", "", "")
-                    .row("shippriority", "integer", "", "")
-                    .row("comment", "varchar(79)", "", "")
-                    .build();
-        }
-        else {
-            return MaterializedResult.resultBuilder(getQueryRunner().getDefaultSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                    .row("orderkey", "bigint", "", "")
-                    .row("custkey", "bigint", "", "")
-                    .row("orderstatus", "varchar", "", "")
-                    .row("totalprice", "double", "", "")
-                    .row("orderdate", orderDateType, "", "")
-                    .row("orderpriority", "varchar", "", "")
-                    .row("clerk", "varchar", "", "")
-                    .row("shippriority", "integer", "", "")
-                    .row("comment", "varchar", "", "")
-                    .build();
-        }
+        transaction(getQueryRunner().getTransactionManager(), getQueryRunner().getAccessControl())
+                .execute(getSession(), session -> {
+                    Plan plan = getQueryRunner().createPlan(session, sql, WarningCollector.NOOP);
+                    assertPlan(
+                            session,
+                            getQueryRunner().getMetadata(),
+                            (node, sourceStats, lookup, ignore, types) -> PlanNodeStatsEstimate.unknown(),
+                            plan,
+                            PlanMatchPattern.output(
+                                    PlanMatchPattern.exchange(
+                                            PlanMatchPattern.node(TableScanNode.class))));
+                });
     }
 }

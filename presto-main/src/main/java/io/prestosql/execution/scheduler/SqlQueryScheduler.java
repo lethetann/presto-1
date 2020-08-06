@@ -26,7 +26,6 @@ import io.airlift.units.Duration;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.execution.BasicStageStats;
-import io.prestosql.execution.LocationFactory;
 import io.prestosql.execution.NodeTaskMap;
 import io.prestosql.execution.QueryState;
 import io.prestosql.execution.QueryStateMachine;
@@ -41,6 +40,7 @@ import io.prestosql.execution.buffer.OutputBuffers;
 import io.prestosql.execution.buffer.OutputBuffers.OutputBufferId;
 import io.prestosql.failuredetector.FailureDetector;
 import io.prestosql.metadata.InternalNode;
+import io.prestosql.server.DynamicFilterService.StageDynamicFilters;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorPartitionHandle;
 import io.prestosql.split.SplitSource;
@@ -90,6 +90,7 @@ import static io.prestosql.execution.StageState.ABORTED;
 import static io.prestosql.execution.StageState.CANCELED;
 import static io.prestosql.execution.StageState.FAILED;
 import static io.prestosql.execution.StageState.FINISHED;
+import static io.prestosql.execution.StageState.FLUSHING;
 import static io.prestosql.execution.StageState.RUNNING;
 import static io.prestosql.execution.StageState.SCHEDULED;
 import static io.prestosql.execution.scheduler.SourcePartitionedScheduler.newSourcePartitionedSchedulerAsStageScheduler;
@@ -124,7 +125,6 @@ public class SqlQueryScheduler
 
     public static SqlQueryScheduler createSqlQueryScheduler(
             QueryStateMachine queryStateMachine,
-            LocationFactory locationFactory,
             StageExecutionPlan plan,
             NodePartitioningManager nodePartitioningManager,
             NodeScheduler nodeScheduler,
@@ -142,7 +142,6 @@ public class SqlQueryScheduler
     {
         SqlQueryScheduler sqlQueryScheduler = new SqlQueryScheduler(
                 queryStateMachine,
-                locationFactory,
                 plan,
                 nodePartitioningManager,
                 nodeScheduler,
@@ -163,7 +162,6 @@ public class SqlQueryScheduler
 
     private SqlQueryScheduler(
             QueryStateMachine queryStateMachine,
-            LocationFactory locationFactory,
             StageExecutionPlan plan,
             NodePartitioningManager nodePartitioningManager,
             NodeScheduler nodeScheduler,
@@ -423,7 +421,7 @@ public class SqlQueryScheduler
         }
         Set<SqlStageExecution> childStages = childStagesBuilder.build();
         stage.addStateChangeListener(newState -> {
-            if (newState.isDone()) {
+            if (newState == FLUSHING || newState.isDone()) {
                 childStages.forEach(SqlStageExecution::cancel);
             }
         });
@@ -472,6 +470,13 @@ public class SqlQueryScheduler
                 .collect(toImmutableMap(StageInfo::getStageId, identity()));
 
         return buildStageInfo(rootStageId, stageInfos);
+    }
+
+    public List<StageDynamicFilters> getStageDynamicFilters()
+    {
+        return stages.values().stream()
+                .map(SqlStageExecution::getStageDynamicFilters)
+                .collect(toImmutableList());
     }
 
     private StageInfo buildStageInfo(StageId stageId, Map<StageId, StageInfo> stageInfos)
@@ -591,7 +596,7 @@ public class SqlQueryScheduler
 
             for (SqlStageExecution stage : stages.values()) {
                 StageState state = stage.getState();
-                if (state != SCHEDULED && state != RUNNING && !state.isDone()) {
+                if (state != SCHEDULED && state != RUNNING && state != FLUSHING && !state.isDone()) {
                     throw new PrestoException(GENERIC_INTERNAL_ERROR, format("Scheduling is complete, but stage %s is in state %s", stage.getStageId(), state));
                 }
             }
@@ -624,7 +629,7 @@ public class SqlQueryScheduler
     {
         try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
             SqlStageExecution sqlStageExecution = stages.get(stageId);
-            SqlStageExecution stage = requireNonNull(sqlStageExecution, () -> format("Stage %s does not exist", stageId));
+            SqlStageExecution stage = requireNonNull(sqlStageExecution, () -> format("Stage '%s' does not exist", stageId));
             stage.cancel();
         }
     }
@@ -699,27 +704,7 @@ public class SqlQueryScheduler
 
         public void processScheduleResults(StageState newState, Set<RemoteTask> newTasks)
         {
-            boolean noMoreTasks = false;
-            switch (newState) {
-                case PLANNED:
-                case SCHEDULING:
-                    // workers are still being added to the query
-                    break;
-                case SCHEDULING_SPLITS:
-                case SCHEDULED:
-                case RUNNING:
-                case FINISHED:
-                case CANCELED:
-                    // no more workers will be added to the query
-                    noMoreTasks = true;
-                case ABORTED:
-                case FAILED:
-                    // DO NOT complete a FAILED or ABORTED stage.  This will cause the
-                    // stage above to finish normally, which will result in a query
-                    // completing successfully when it should fail..
-                    break;
-            }
-
+            boolean noMoreTasks = !newState.canScheduleMoreTasks();
             // Add an exchange location to the parent stage for each new task
             parent.addExchangeLocations(currentStageFragmentId, newTasks, noMoreTasks);
 

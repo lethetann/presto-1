@@ -13,7 +13,6 @@
  */
 package io.prestosql.plugin.jdbc.credential;
 
-import io.prestosql.plugin.jdbc.BaseJdbcAuthenticationConfig;
 import io.prestosql.plugin.jdbc.JdbcIdentity;
 
 import javax.inject.Inject;
@@ -31,9 +30,9 @@ public class ExtraCredentialProvider
     private final CredentialProvider delegate;
 
     @Inject
-    public ExtraCredentialProvider(BaseJdbcAuthenticationConfig config, @ForExtraCredentialProvider CredentialProvider delegate)
+    public ExtraCredentialProvider(ExtraCredentialConfig config, @ForExtraCredentialProvider CredentialProvider delegate)
     {
-        this(Optional.ofNullable(config.getUserCredentialName()), Optional.ofNullable(config.getPasswordCredentialName()), delegate);
+        this(config.getUserCredentialName(), config.getPasswordCredentialName(), delegate);
     }
 
     public ExtraCredentialProvider(Optional<String> userCredentialName, Optional<String> passwordCredentialName, CredentialProvider delegate)

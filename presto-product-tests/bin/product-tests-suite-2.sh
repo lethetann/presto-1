@@ -2,28 +2,35 @@
 
 set -xeuo pipefail
 
-exit_code=0
+DISTRO_SKIP_GROUP="${DISTRO_SKIP_GROUP:-}"
+DISTRO_SKIP_TEST="${DISTRO_SKIP_TEST:-}"
 
-presto-product-tests/bin/run_on_docker.sh \
-    singlenode \
-    -g hdfs_no_impersonation,hive_compression \
-    -x "${DISTRO_SKIP_GROUP}" \
-    || exit_code=1
+suite_exit_code=0
 
-presto-product-tests/bin/run_on_docker.sh \
-    singlenode-kerberos-hdfs-no-impersonation \
-    -g hdfs_no_impersonation \
-    || exit_code=1
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode \
+    -- -g hdfs_no_impersonation,hive_compression -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
 
-presto-product-tests/bin/run_on_docker.sh \
-    singlenode-hdfs-impersonation \
-    -g storage_formats,cli,hdfs_impersonation \
-    || exit_code=1
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode-kerberos-hdfs-no-impersonation \
+    -- -g storage_formats,hdfs_no_impersonation -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
 
-presto-product-tests/bin/run_on_docker.sh \
-    singlenode-kerberos-hdfs-impersonation \
-    -g storage_formats,cli,hdfs_impersonation,authorization,hive_file_header \
-    || exit_code=1
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode-hdfs-impersonation \
+    -- -g storage_formats,cli,hdfs_impersonation -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
 
-echo "$0: exiting with ${exit_code}"
-exit "${exit_code}"
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode-kerberos-hdfs-impersonation \
+    -- -g storage_formats,cli,hdfs_impersonation,authorization,hive_file_header -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
+
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode \
+    -- -g hive_with_external_writes -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
+
+echo "$0: exiting with ${suite_exit_code}"
+exit "${suite_exit_code}"

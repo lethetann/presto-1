@@ -2,15 +2,10 @@
 Kafka Connector Tutorial
 ========================
 
-.. contents::
-    :local:
-    :backlinks: none
-    :depth: 2
-
 Introduction
 ============
 
-The Kafka Connector for Presto allows access to live topic data from
+The :doc:`kafka` for Presto allows access to live topic data from
 Apache Kafka using Presto. This tutorial shows how to set up topics, and
 how to create the topic description files that back Presto tables.
 
@@ -154,9 +149,6 @@ built-in ones:
     -------------------+---------+-------+---------------------------------------------
      _partition_id     | bigint  |       | Partition Id
      _partition_offset | bigint  |       | Offset for the message within the partition
-     _segment_start    | bigint  |       | Segment start offset
-     _segment_end      | bigint  |       | Segment end offset
-     _segment_count    | bigint  |       | Running message count per segment
      _key              | varchar |       | Key text
      _key_corrupt      | boolean |       | Key data is corrupt
      _key_length       | bigint  |       | Total number of key bytes
@@ -231,9 +223,6 @@ The customer table now has an additional column: ``kafka_key``.
      kafka_key         | bigint  |       |
      _partition_id     | bigint  |       | Partition Id
      _partition_offset | bigint  |       | Offset for the message within the partition
-     _segment_start    | bigint  |       | Segment start offset
-     _segment_end      | bigint  |       | Segment end offset
-     _segment_count    | bigint  |       | Running message count per segment
      _key              | varchar |       | Key text
      _key_corrupt      | boolean |       | Key data is corrupt
      _key_length       | bigint  |       | Total number of key bytes
@@ -357,9 +346,6 @@ the sum query from earlier can operate on the ``account_balance`` column directl
      comment           | varchar |       |
      _partition_id     | bigint  |       | Partition Id
      _partition_offset | bigint  |       | Offset for the message within the partition
-     _segment_start    | bigint  |       | Segment start offset
-     _segment_end      | bigint  |       | Segment end offset
-     _segment_count    | bigint  |       | Running message count per segment
      _key              | varchar |       | Key text
      _key_corrupt      | boolean |       | Key data is corrupt
      _key_length       | bigint  |       | Total number of key bytes

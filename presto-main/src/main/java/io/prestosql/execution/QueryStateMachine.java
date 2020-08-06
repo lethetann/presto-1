@@ -38,10 +38,14 @@ import io.prestosql.server.BasicQueryStats;
 import io.prestosql.spi.ErrorCode;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.QueryId;
+import io.prestosql.spi.eventlistener.RoutineInfo;
 import io.prestosql.spi.eventlistener.StageGcStatistics;
+import io.prestosql.spi.eventlistener.TableInfo;
+import io.prestosql.spi.resourcegroups.QueryType;
 import io.prestosql.spi.resourcegroups.ResourceGroupId;
 import io.prestosql.spi.security.SelectedRole;
 import io.prestosql.spi.type.Type;
+import io.prestosql.sql.analyzer.Output;
 import io.prestosql.sql.planner.PlanFragment;
 import io.prestosql.sql.planner.plan.TableScanNode;
 import io.prestosql.transaction.TransactionId;
@@ -112,6 +116,7 @@ public class QueryStateMachine
 
     private final AtomicLong currentRevocableMemory = new AtomicLong();
     private final AtomicLong peakRevocableMemory = new AtomicLong();
+    private final AtomicLong peakNonRevocableMemory = new AtomicLong();
 
     // peak of the user + system + revocable memory reservation
     private final AtomicLong currentTotalMemory = new AtomicLong();
@@ -147,9 +152,13 @@ public class QueryStateMachine
 
     private final AtomicReference<Set<Input>> inputs = new AtomicReference<>(ImmutableSet.of());
     private final AtomicReference<Optional<Output>> output = new AtomicReference<>(Optional.empty());
+    private final AtomicReference<List<TableInfo>> referencedTables = new AtomicReference<>(ImmutableList.of());
+    private final AtomicReference<List<RoutineInfo>> routines = new AtomicReference<>(ImmutableList.of());
     private final StateMachine<Optional<QueryInfo>> finalQueryInfo;
 
     private final WarningCollector warningCollector;
+
+    private final Optional<QueryType> queryType;
 
     private QueryStateMachine(
             String query,
@@ -161,7 +170,8 @@ public class QueryStateMachine
             Executor executor,
             Ticker ticker,
             Metadata metadata,
-            WarningCollector warningCollector)
+            WarningCollector warningCollector,
+            Optional<QueryType> queryType)
     {
         this.query = requireNonNull(query, "query is null");
         this.preparedQuery = requireNonNull(preparedQuery, "preparedQuery is null");
@@ -177,6 +187,7 @@ public class QueryStateMachine
         this.finalQueryInfo = new StateMachine<>("finalQueryInfo-" + queryId, executor, Optional.empty());
         this.outputManager = new QueryOutputManager(executor);
         this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
+        this.queryType = requireNonNull(queryType, "queryType is null");
     }
 
     /**
@@ -193,7 +204,8 @@ public class QueryStateMachine
             AccessControl accessControl,
             Executor executor,
             Metadata metadata,
-            WarningCollector warningCollector)
+            WarningCollector warningCollector,
+            Optional<QueryType> queryType)
     {
         return beginWithTicker(
                 query,
@@ -207,7 +219,8 @@ public class QueryStateMachine
                 executor,
                 Ticker.systemTicker(),
                 metadata,
-                warningCollector);
+                warningCollector,
+                queryType);
     }
 
     static QueryStateMachine beginWithTicker(
@@ -222,10 +235,11 @@ public class QueryStateMachine
             Executor executor,
             Ticker ticker,
             Metadata metadata,
-            WarningCollector warningCollector)
+            WarningCollector warningCollector,
+            Optional<QueryType> queryType)
     {
         // If there is not an existing transaction, begin an auto commit transaction
-        if (!session.getTransactionId().isPresent() && !transactionControl) {
+        if (session.getTransactionId().isEmpty() && !transactionControl) {
             // TODO: make autocommit isolation level a session parameter
             TransactionId transactionId = transactionManager.beginTransaction(true);
             session = session.beginTransactionId(transactionId, transactionManager, accessControl);
@@ -241,7 +255,8 @@ public class QueryStateMachine
                 executor,
                 ticker,
                 metadata,
-                warningCollector);
+                warningCollector,
+                queryType);
         queryStateMachine.addStateChangeListener(newState -> QUERY_STATE_LOG.debug("Query %s is %s", queryStateMachine.getQueryId(), newState));
 
         return queryStateMachine;
@@ -265,6 +280,11 @@ public class QueryStateMachine
     public long getPeakRevocableMemoryInBytes()
     {
         return peakRevocableMemory.get();
+    }
+
+    public long getPeakNonRevocableMemoryInBytes()
+    {
+        return peakNonRevocableMemory.get();
     }
 
     public long getPeakTotalMemoryInBytes()
@@ -305,6 +325,7 @@ public class QueryStateMachine
         currentTotalMemory.addAndGet(deltaTotalMemoryInBytes);
         peakUserMemory.updateAndGet(currentPeakValue -> Math.max(currentUserMemory.get(), currentPeakValue));
         peakRevocableMemory.updateAndGet(currentPeakValue -> Math.max(currentRevocableMemory.get(), currentPeakValue));
+        peakNonRevocableMemory.updateAndGet(currentPeakValue -> Math.max(currentTotalMemory.get() - currentRevocableMemory.get(), currentPeakValue));
         peakTotalMemory.updateAndGet(currentPeakValue -> Math.max(currentTotalMemory.get(), currentPeakValue));
         peakTaskUserMemory.accumulateAndGet(taskUserMemoryInBytes, Math::max);
         peakTaskRevocableMemory.accumulateAndGet(taskRevocableMemoryInBytes, Math::max);
@@ -342,6 +363,7 @@ public class QueryStateMachine
 
                 stageStats.getRawInputDataSize(),
                 stageStats.getRawInputPositions(),
+                stageStats.getPhysicalInputDataSize(),
 
                 stageStats.getCumulativeUserMemory(),
                 stageStats.getUserMemoryReservation(),
@@ -365,10 +387,12 @@ public class QueryStateMachine
                 stageStats.isScheduled(),
                 self,
                 query,
+                Optional.ofNullable(updateType.get()),
                 preparedQuery,
                 queryStats,
                 errorCode == null ? null : errorCode.getType(),
-                errorCode);
+                errorCode,
+                queryType);
     }
 
     @VisibleForTesting
@@ -420,8 +444,11 @@ public class QueryStateMachine
                 warningCollector.getWarnings(),
                 inputs.get(),
                 output.get(),
+                referencedTables.get(),
+                routines.get(),
                 completeInfo,
-                Optional.of(resourceGroup));
+                Optional.of(resourceGroup),
+                queryType);
     }
 
     private QueryStats getQueryStats(Optional<StageInfo> rootStage)
@@ -447,6 +474,7 @@ public class QueryStateMachine
 
         long physicalInputDataSize = 0;
         long physicalInputPositions = 0;
+        long physicalInputReadTime = 0;
 
         long internalNetworkInputDataSize = 0;
         long internalNetworkInputPositions = 0;
@@ -495,6 +523,7 @@ public class QueryStateMachine
 
             physicalInputDataSize += stageStats.getPhysicalInputDataSize().toBytes();
             physicalInputPositions += stageStats.getPhysicalInputPositions();
+            physicalInputReadTime += stageStats.getPhysicalInputReadTime().roundTo(MILLISECONDS);
 
             internalNetworkInputDataSize += stageStats.getInternalNetworkInputDataSize().toBytes();
             internalNetworkInputPositions += stageStats.getInternalNetworkInputPositions();
@@ -555,6 +584,7 @@ public class QueryStateMachine
                 succinctBytes(totalMemoryReservation),
                 succinctBytes(getPeakUserMemoryInBytes()),
                 succinctBytes(getPeakRevocableMemoryInBytes()),
+                succinctBytes(getPeakNonRevocableMemoryInBytes()),
                 succinctBytes(getPeakTotalMemoryInBytes()),
                 succinctBytes(getPeakTaskUserMemory()),
                 succinctBytes(getPeakTaskRevocableMemory()),
@@ -570,6 +600,7 @@ public class QueryStateMachine
 
                 succinctBytes(physicalInputDataSize),
                 physicalInputPositions,
+                new Duration(physicalInputReadTime, MILLISECONDS).convertToMostSuccinctTimeUnit(),
                 succinctBytes(internalNetworkInputDataSize),
                 internalNetworkInputPositions,
                 succinctBytes(rawInputDataSize),
@@ -621,6 +652,18 @@ public class QueryStateMachine
     {
         requireNonNull(output, "output is null");
         this.output.set(output);
+    }
+
+    public void setReferencedTables(List<TableInfo> tables)
+    {
+        requireNonNull(tables, "tables is null");
+        referencedTables.set(ImmutableList.copyOf(tables));
+    }
+
+    public void setRoutines(List<RoutineInfo> routines)
+    {
+        requireNonNull(routines, "routines is null");
+        this.routines.set(ImmutableList.copyOf(routines));
     }
 
     public Map<String, String> getSetSessionProperties()
@@ -812,8 +855,13 @@ public class QueryStateMachine
         requireNonNull(throwable, "throwable is null");
         failureCause.compareAndSet(null, toFailure(throwable));
 
-        boolean failed = queryState.setIf(FAILED, currentState -> !currentState.isDone());
-        if (failed) {
+        QueryState oldState = queryState.trySet(FAILED);
+        if (oldState.isDone()) {
+            QUERY_STATE_LOG.debug(throwable, "Failure after query %s finished", queryId);
+            return false;
+        }
+
+        try {
             QUERY_STATE_LOG.debug(throwable, "Query %s failed", queryId);
             session.getTransactionId().ifPresent(transactionId -> {
                 if (transactionManager.isAutoCommit(transactionId)) {
@@ -824,11 +872,14 @@ public class QueryStateMachine
                 }
             });
         }
-        else {
-            QUERY_STATE_LOG.debug(throwable, "Failure after query %s finished", queryId);
+        finally {
+            // if the query has not started, then there is no final query info to wait for
+            if (oldState.ordinal() <= PLANNING.ordinal()) {
+                finalQueryInfo.compareAndSet(Optional.empty(), Optional.of(getQueryInfo(Optional.empty())));
+            }
         }
 
-        return failed;
+        return true;
     }
 
     public boolean transitionToCanceled()
@@ -942,12 +993,12 @@ public class QueryStateMachine
 
     private static boolean isScheduled(Optional<StageInfo> rootStage)
     {
-        if (!rootStage.isPresent()) {
+        if (rootStage.isEmpty()) {
             return false;
         }
         return getAllStages(rootStage).stream()
                 .map(StageInfo::getState)
-                .allMatch(state -> (state == StageState.RUNNING) || state.isDone());
+                .allMatch(state -> state == StageState.RUNNING || state == StageState.FLUSHING || state.isDone());
     }
 
     public Optional<ExecutionFailureInfo> getFailureInfo()
@@ -975,7 +1026,7 @@ public class QueryStateMachine
     public void pruneQueryInfo()
     {
         Optional<QueryInfo> finalInfo = finalQueryInfo.get();
-        if (!finalInfo.isPresent() || !finalInfo.get().getOutputStage().isPresent()) {
+        if (finalInfo.isEmpty() || finalInfo.get().getOutputStage().isEmpty()) {
             return;
         }
 
@@ -1019,8 +1070,11 @@ public class QueryStateMachine
                 queryInfo.getWarnings(),
                 queryInfo.getInputs(),
                 queryInfo.getOutput(),
+                queryInfo.getReferencedTables(),
+                queryInfo.getRoutines(),
                 queryInfo.isCompleteInfo(),
-                queryInfo.getResourceGroupId());
+                queryInfo.getResourceGroupId(),
+                queryInfo.getQueryType());
         finalQueryInfo.compareAndSet(finalInfo, Optional.of(prunedQueryInfo));
     }
 
@@ -1053,6 +1107,7 @@ public class QueryStateMachine
                 queryStats.getTotalMemoryReservation(),
                 queryStats.getPeakUserMemoryReservation(),
                 queryStats.getPeakRevocableMemoryReservation(),
+                queryStats.getPeakNonRevocableMemoryReservation(),
                 queryStats.getPeakTotalMemoryReservation(),
                 queryStats.getPeakTaskUserMemory(),
                 queryStats.getPeakTaskRevocableMemory(),
@@ -1065,6 +1120,7 @@ public class QueryStateMachine
                 queryStats.getBlockedReasons(),
                 queryStats.getPhysicalInputDataSize(),
                 queryStats.getPhysicalInputPositions(),
+                queryStats.getPhysicalInputReadTime(),
                 queryStats.getInternalNetworkInputDataSize(),
                 queryStats.getInternalNetworkInputPositions(),
                 queryStats.getRawInputDataSize(),

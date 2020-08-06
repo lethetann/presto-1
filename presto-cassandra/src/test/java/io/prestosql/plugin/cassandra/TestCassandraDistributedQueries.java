@@ -13,29 +13,49 @@
  */
 package io.prestosql.plugin.cassandra;
 
+import com.google.common.collect.ImmutableMap;
 import io.prestosql.testing.AbstractTestDistributedQueries;
 import io.prestosql.testing.MaterializedResult;
-import org.testng.annotations.Test;
+import io.prestosql.testing.QueryRunner;
+import io.prestosql.testing.sql.TestTable;
+import io.prestosql.tpch.TpchTable;
+import org.testng.SkipException;
+import org.testng.annotations.AfterClass;
 
+import static io.prestosql.plugin.cassandra.CassandraQueryRunner.createCassandraQueryRunner;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static io.prestosql.testing.MaterializedResult.resultBuilder;
 import static io.prestosql.testing.assertions.Assert.assertEquals;
 
-//Integrations tests fail when parallel, due to a bug or configuration error in the embedded
-//cassandra instance. This problem results in either a hang in Thrift calls or broken sockets.
-@Test(singleThreaded = true)
 public class TestCassandraDistributedQueries
         extends AbstractTestDistributedQueries
 {
-    public TestCassandraDistributedQueries()
+    private CassandraServer server;
+
+    @Override
+    protected QueryRunner createQueryRunner()
+            throws Exception
     {
-        super(CassandraQueryRunner::createCassandraQueryRunner);
+        this.server = new CassandraServer();
+        return createCassandraQueryRunner(server, ImmutableMap.of(), TpchTable.getTables());
+    }
+
+    @AfterClass(alwaysRun = true)
+    public void tearDown()
+    {
+        server.close();
     }
 
     @Override
     protected boolean supportsViews()
     {
         return false;
+    }
+
+    @Override
+    public void testCreateSchema()
+    {
+        // Cassandra does not support creating schemas
     }
 
     @Override
@@ -65,28 +85,25 @@ public class TestCassandraDistributedQueries
     @Override
     public void testInsert()
     {
-        // Cassandra connector currently does not support create table
+        // TODO test inserts
+    }
+
+    @Override
+    public void testInsertWithCoercion()
+    {
         // TODO test inserts
     }
 
     @Override
     public void testInsertUnicode()
     {
-        // Cassandra connector currently does not support create table
         // TODO test inserts
     }
 
     @Override
     public void testInsertArray()
     {
-        // Cassandra connector currently does not support create table
         // TODO test inserts
-    }
-
-    @Override
-    public void testCreateTable()
-    {
-        // Cassandra connector currently does not support create table
     }
 
     @Override
@@ -116,18 +133,6 @@ public class TestCassandraDistributedQueries
     }
 
     @Override
-    public void testDescribeOutput()
-    {
-        // this connector uses a non-canonical type for varchar columns in tpch
-    }
-
-    @Override
-    public void testDescribeOutputNamedAndUnnamed()
-    {
-        // this connector uses a non-canonical type for varchar columns in tpch
-    }
-
-    @Override
     public void testWrittenStats()
     {
         // TODO Cassandra connector supports CTAS and inserts, but the test would fail
@@ -138,5 +143,20 @@ public class TestCassandraDistributedQueries
     {
         // Cassandra connector currently does not support comment on table
         assertQueryFails("COMMENT ON TABLE orders IS 'hello'", "This connector does not support setting table comments");
+    }
+
+    @Override
+    protected TestTable createTableWithDefaultColumns()
+    {
+        throw new SkipException("Cassandra connector does not support column default values");
+    }
+
+    @Override
+    public void testDataMappingSmokeTest(DataMappingTestSetup dataMappingTestSetup)
+    {
+        // TODO Enable after fixing the following error messages
+        // - Multiple definition of identifier id
+        // - unsupported type: char(3), decimal(5,3), decimal(15,3), time, timestamp with time zone
+        // - Invalid (reserved) user type name smallint
     }
 }

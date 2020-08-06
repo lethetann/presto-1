@@ -30,6 +30,7 @@ import io.prestosql.operator.aggregation.ApproximateRealPercentileAggregations;
 import io.prestosql.operator.aggregation.ApproximateRealPercentileArrayAggregations;
 import io.prestosql.operator.aggregation.ApproximateSetAggregation;
 import io.prestosql.operator.aggregation.AverageAggregations;
+import io.prestosql.operator.aggregation.BigintApproximateMostFrequent;
 import io.prestosql.operator.aggregation.BitwiseAndAggregation;
 import io.prestosql.operator.aggregation.BitwiseOrAggregation;
 import io.prestosql.operator.aggregation.BooleanAndAggregation;
@@ -60,6 +61,7 @@ import io.prestosql.operator.aggregation.RealHistogramAggregation;
 import io.prestosql.operator.aggregation.RealRegressionAggregation;
 import io.prestosql.operator.aggregation.RealSumAggregation;
 import io.prestosql.operator.aggregation.SumDataSizeForStats;
+import io.prestosql.operator.aggregation.VarcharApproximateMostFrequent;
 import io.prestosql.operator.aggregation.VarianceAggregation;
 import io.prestosql.operator.aggregation.arrayagg.ArrayAggregationFunction;
 import io.prestosql.operator.aggregation.histogram.Histogram;
@@ -112,6 +114,7 @@ import io.prestosql.operator.scalar.JoniRegexpFunctions;
 import io.prestosql.operator.scalar.JoniRegexpReplaceLambdaFunction;
 import io.prestosql.operator.scalar.JsonFunctions;
 import io.prestosql.operator.scalar.JsonOperators;
+import io.prestosql.operator.scalar.LuhnCheckFunction;
 import io.prestosql.operator.scalar.MapCardinalityFunction;
 import io.prestosql.operator.scalar.MapDistinctFromOperator;
 import io.prestosql.operator.scalar.MapEntriesFunction;
@@ -129,9 +132,6 @@ import io.prestosql.operator.scalar.Re2JRegexpFunctions;
 import io.prestosql.operator.scalar.Re2JRegexpReplaceLambdaFunction;
 import io.prestosql.operator.scalar.RepeatFunction;
 import io.prestosql.operator.scalar.ScalarFunctionImplementation;
-import io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentProperty;
-import io.prestosql.operator.scalar.ScalarFunctionImplementation.ArgumentType;
-import io.prestosql.operator.scalar.ScalarFunctionImplementation.ScalarImplementationChoice;
 import io.prestosql.operator.scalar.SequenceFunction;
 import io.prestosql.operator.scalar.SessionFunctions;
 import io.prestosql.operator.scalar.SplitToMapFunction;
@@ -143,6 +143,58 @@ import io.prestosql.operator.scalar.UrlFunctions;
 import io.prestosql.operator.scalar.VarbinaryFunctions;
 import io.prestosql.operator.scalar.WilsonInterval;
 import io.prestosql.operator.scalar.WordStemFunction;
+import io.prestosql.operator.scalar.timestamp.DateAdd;
+import io.prestosql.operator.scalar.timestamp.DateDiff;
+import io.prestosql.operator.scalar.timestamp.DateFormat;
+import io.prestosql.operator.scalar.timestamp.DateToTimestampCast;
+import io.prestosql.operator.scalar.timestamp.DateTrunc;
+import io.prestosql.operator.scalar.timestamp.ExtractDay;
+import io.prestosql.operator.scalar.timestamp.ExtractDayOfWeek;
+import io.prestosql.operator.scalar.timestamp.ExtractDayOfYear;
+import io.prestosql.operator.scalar.timestamp.ExtractHour;
+import io.prestosql.operator.scalar.timestamp.ExtractMillisecond;
+import io.prestosql.operator.scalar.timestamp.ExtractMinute;
+import io.prestosql.operator.scalar.timestamp.ExtractMonth;
+import io.prestosql.operator.scalar.timestamp.ExtractQuarter;
+import io.prestosql.operator.scalar.timestamp.ExtractSecond;
+import io.prestosql.operator.scalar.timestamp.ExtractWeekOfYear;
+import io.prestosql.operator.scalar.timestamp.ExtractYear;
+import io.prestosql.operator.scalar.timestamp.ExtractYearOfWeek;
+import io.prestosql.operator.scalar.timestamp.FormatDateTime;
+import io.prestosql.operator.scalar.timestamp.LastDayOfMonth;
+import io.prestosql.operator.scalar.timestamp.LocalTimestamp;
+import io.prestosql.operator.scalar.timestamp.SequenceIntervalDayToSecond;
+import io.prestosql.operator.scalar.timestamp.SequenceIntervalYearToMonth;
+import io.prestosql.operator.scalar.timestamp.TimeToTimestampCast;
+import io.prestosql.operator.scalar.timestamp.TimeWithTimezoneToTimestampCast;
+import io.prestosql.operator.scalar.timestamp.TimestampDistinctFromOperator;
+import io.prestosql.operator.scalar.timestamp.TimestampOperators;
+import io.prestosql.operator.scalar.timestamp.TimestampToDateCast;
+import io.prestosql.operator.scalar.timestamp.TimestampToJsonCast;
+import io.prestosql.operator.scalar.timestamp.TimestampToTimeCast;
+import io.prestosql.operator.scalar.timestamp.TimestampToTimeWithTimezoneCast;
+import io.prestosql.operator.scalar.timestamp.TimestampToTimestampCast;
+import io.prestosql.operator.scalar.timestamp.TimestampToTimestampWithTimezoneCast;
+import io.prestosql.operator.scalar.timestamp.TimestampToVarcharCast;
+import io.prestosql.operator.scalar.timestamp.ToIso8601;
+import io.prestosql.operator.scalar.timestamp.ToUnixTime;
+import io.prestosql.operator.scalar.timestamp.VarcharToTimestampCast;
+import io.prestosql.operator.scalar.timestamp.WithTimeZone;
+import io.prestosql.operator.scalar.timestamptz.AtTimeZone;
+import io.prestosql.operator.scalar.timestamptz.AtTimeZoneWithOffset;
+import io.prestosql.operator.scalar.timestamptz.CurrentTimestamp;
+import io.prestosql.operator.scalar.timestamptz.DateToTimestampWithTimeZoneCast;
+import io.prestosql.operator.scalar.timestamptz.TimeToTimestampWithTimeZoneCast;
+import io.prestosql.operator.scalar.timestamptz.TimeWithTimeZoneToTimestampWithTimeZoneCast;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneDistinctFromOperator;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneOperators;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneToDateCast;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneToTimeCast;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneToTimeWithTimezoneCast;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneToTimestampWithTimeZoneCast;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimeZoneToVarcharCast;
+import io.prestosql.operator.scalar.timestamptz.TimestampWithTimezoneToTimestampCast;
+import io.prestosql.operator.scalar.timestamptz.VarcharToTimestampWithTimeZoneCast;
 import io.prestosql.operator.window.CumulativeDistributionFunction;
 import io.prestosql.operator.window.DenseRankFunction;
 import io.prestosql.operator.window.FirstValueFunction;
@@ -157,6 +209,8 @@ import io.prestosql.operator.window.RowNumberFunction;
 import io.prestosql.operator.window.SqlWindowFunction;
 import io.prestosql.operator.window.WindowFunctionSupplier;
 import io.prestosql.spi.PrestoException;
+import io.prestosql.spi.block.BlockEncodingSerde;
+import io.prestosql.spi.function.InvocationConvention;
 import io.prestosql.sql.DynamicFilters;
 import io.prestosql.sql.analyzer.FeaturesConfig;
 import io.prestosql.sql.tree.QualifiedName;
@@ -179,8 +233,6 @@ import io.prestosql.type.RealOperators;
 import io.prestosql.type.SmallintOperators;
 import io.prestosql.type.TimeOperators;
 import io.prestosql.type.TimeWithTimeZoneOperators;
-import io.prestosql.type.TimestampOperators;
-import io.prestosql.type.TimestampWithTimeZoneOperators;
 import io.prestosql.type.TinyintOperators;
 import io.prestosql.type.UnknownOperators;
 import io.prestosql.type.UuidOperators;
@@ -196,8 +248,8 @@ import javax.annotation.concurrent.ThreadSafe;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -255,8 +307,8 @@ import static io.prestosql.operator.scalar.MapFilterFunction.MAP_FILTER_FUNCTION
 import static io.prestosql.operator.scalar.MapHashCodeOperator.MAP_HASH_CODE;
 import static io.prestosql.operator.scalar.MapToJsonCast.MAP_TO_JSON;
 import static io.prestosql.operator.scalar.MapToMapCast.MAP_TO_MAP_CAST;
-import static io.prestosql.operator.scalar.MapTransformKeyFunction.MAP_TRANSFORM_KEY_FUNCTION;
-import static io.prestosql.operator.scalar.MapTransformValueFunction.MAP_TRANSFORM_VALUE_FUNCTION;
+import static io.prestosql.operator.scalar.MapTransformKeysFunction.MAP_TRANSFORM_KEYS_FUNCTION;
+import static io.prestosql.operator.scalar.MapTransformValuesFunction.MAP_TRANSFORM_VALUES_FUNCTION;
 import static io.prestosql.operator.scalar.MapZipWithFunction.MAP_ZIP_WITH_FUNCTION;
 import static io.prestosql.operator.scalar.MathFunctions.DECIMAL_MOD_FUNCTION;
 import static io.prestosql.operator.scalar.Re2JCastToRegexpFunction.castCharToRe2JRegexp;
@@ -272,13 +324,10 @@ import static io.prestosql.operator.scalar.RowLessThanOrEqualOperator.ROW_LESS_T
 import static io.prestosql.operator.scalar.RowNotEqualOperator.ROW_NOT_EQUAL;
 import static io.prestosql.operator.scalar.RowToJsonCast.ROW_TO_JSON;
 import static io.prestosql.operator.scalar.RowToRowCast.ROW_TO_ROW_CAST;
-import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.BLOCK_AND_POSITION;
-import static io.prestosql.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static io.prestosql.operator.scalar.TryCastFunction.TRY_CAST;
 import static io.prestosql.operator.scalar.ZipFunction.ZIP_FUNCTIONS;
 import static io.prestosql.operator.scalar.ZipWithFunction.ZIP_WITH_FUNCTION;
 import static io.prestosql.operator.window.AggregateWindowFunction.supplier;
-import static io.prestosql.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static io.prestosql.type.DecimalCasts.BIGINT_TO_DECIMAL_CAST;
 import static io.prestosql.type.DecimalCasts.BOOLEAN_TO_DECIMAL_CAST;
 import static io.prestosql.type.DecimalCasts.DECIMAL_TO_BIGINT_CAST;
@@ -297,7 +346,6 @@ import static io.prestosql.type.DecimalCasts.REAL_TO_DECIMAL_CAST;
 import static io.prestosql.type.DecimalCasts.SMALLINT_TO_DECIMAL_CAST;
 import static io.prestosql.type.DecimalCasts.TINYINT_TO_DECIMAL_CAST;
 import static io.prestosql.type.DecimalCasts.VARCHAR_TO_DECIMAL_CAST;
-import static io.prestosql.type.DecimalInequalityOperators.DECIMAL_BETWEEN_OPERATOR;
 import static io.prestosql.type.DecimalInequalityOperators.DECIMAL_DISTINCT_FROM_OPERATOR;
 import static io.prestosql.type.DecimalInequalityOperators.DECIMAL_EQUAL_OPERATOR;
 import static io.prestosql.type.DecimalInequalityOperators.DECIMAL_GREATER_THAN_OPERATOR;
@@ -320,18 +368,17 @@ import static io.prestosql.type.DecimalSaturatedFloorCasts.INTEGER_TO_DECIMAL_SA
 import static io.prestosql.type.DecimalSaturatedFloorCasts.SMALLINT_TO_DECIMAL_SATURATED_FLOOR_CAST;
 import static io.prestosql.type.DecimalSaturatedFloorCasts.TINYINT_TO_DECIMAL_SATURATED_FLOOR_CAST;
 import static io.prestosql.type.DecimalToDecimalCasts.DECIMAL_TO_DECIMAL_CAST;
-import static java.lang.Math.min;
 import static java.util.concurrent.TimeUnit.HOURS;
 
 @ThreadSafe
 public class FunctionRegistry
 {
-    private final Cache<SpecializedFunctionKey, ScalarFunctionImplementation> specializedScalarCache;
-    private final Cache<SpecializedFunctionKey, InternalAggregationFunction> specializedAggregationCache;
-    private final Cache<SpecializedFunctionKey, WindowFunctionSupplier> specializedWindowCache;
+    private final Cache<FunctionBinding, ScalarFunctionImplementation> specializedScalarCache;
+    private final Cache<FunctionBinding, InternalAggregationFunction> specializedAggregationCache;
+    private final Cache<FunctionBinding, WindowFunctionSupplier> specializedWindowCache;
     private volatile FunctionMap functions = new FunctionMap();
 
-    public FunctionRegistry(Metadata metadata, FeaturesConfig featuresConfig)
+    public FunctionRegistry(Supplier<BlockEncodingSerde> blockEncodingSerdeSupplier, FeaturesConfig featuresConfig)
     {
         // We have observed repeated compilation of MethodHandle that leads to full GCs.
         // We notice that flushing the following caches mitigate the problem.
@@ -457,16 +504,12 @@ public class FunctionRegistry
                 .scalar(DateOperators.DateDistinctFromOperator.class)
                 .scalars(TimeOperators.class)
                 .scalar(TimeOperators.TimeDistinctFromOperator.class)
-                .scalars(TimestampOperators.class)
-                .scalar(TimestampOperators.TimestampDistinctFromOperator.class)
                 .scalars(IntervalDayTimeOperators.class)
                 .scalar(IntervalDayTimeOperators.IntervalDayTimeDistinctFromOperator.class)
                 .scalars(IntervalYearMonthOperators.class)
                 .scalar(IntervalYearMonthOperators.IntervalYearMonthDistinctFromOperator.class)
                 .scalars(TimeWithTimeZoneOperators.class)
                 .scalar(TimeWithTimeZoneOperators.TimeWithTimeZoneDistinctFromOperator.class)
-                .scalars(TimestampWithTimeZoneOperators.class)
-                .scalar(TimestampWithTimeZoneOperators.TimestampWithTimeZoneDistinctFromOperator.class)
                 .scalars(DateTimeOperators.class)
                 .scalars(HyperLogLogOperators.class)
                 .scalars(QuantileDigestOperators.class)
@@ -489,6 +532,7 @@ public class FunctionRegistry
                 .scalars(JoniRegexpCasts.class)
                 .scalars(CharacterStringCasts.class)
                 .scalars(CharOperators.class)
+                .scalars(LuhnCheckFunction.class)
                 .scalar(CharOperators.CharDistinctFromOperator.class)
                 .scalar(DecimalOperators.Negation.class)
                 .scalar(DecimalOperators.HashCode.class)
@@ -567,7 +611,6 @@ public class FunctionRegistry
                 .functions(DECIMAL_TO_INTEGER_SATURATED_FLOOR_CAST, INTEGER_TO_DECIMAL_SATURATED_FLOOR_CAST)
                 .functions(DECIMAL_TO_SMALLINT_SATURATED_FLOOR_CAST, SMALLINT_TO_DECIMAL_SATURATED_FLOOR_CAST)
                 .functions(DECIMAL_TO_TINYINT_SATURATED_FLOOR_CAST, TINYINT_TO_DECIMAL_SATURATED_FLOOR_CAST)
-                .function(DECIMAL_BETWEEN_OPERATOR)
                 .function(DECIMAL_DISTINCT_FROM_OPERATOR)
                 .function(new Histogram(featuresConfig.getHistogramGroupImplementation()))
                 .function(CHECKSUM_AGGREGATION)
@@ -585,15 +628,127 @@ public class FunctionRegistry
                 .function(DECIMAL_SUM_AGGREGATION)
                 .function(DECIMAL_MOD_FUNCTION)
                 .functions(ARRAY_TRANSFORM_FUNCTION, ARRAY_REDUCE_FUNCTION)
-                .functions(MAP_FILTER_FUNCTION, MAP_TRANSFORM_KEY_FUNCTION, MAP_TRANSFORM_VALUE_FUNCTION)
+                .functions(MAP_FILTER_FUNCTION, MAP_TRANSFORM_KEYS_FUNCTION, MAP_TRANSFORM_VALUES_FUNCTION)
                 .function(FORMAT_FUNCTION)
                 .function(TRY_CAST)
-                .function(new LiteralFunction())
+                .function(new LiteralFunction(blockEncodingSerdeSupplier))
                 .aggregate(MergeSetDigestAggregation.class)
                 .aggregate(BuildSetDigestAggregation.class)
                 .scalars(SetDigestFunctions.class)
                 .scalars(SetDigestOperators.class)
-                .scalars(WilsonInterval.class);
+                .scalars(WilsonInterval.class)
+                .aggregate(BigintApproximateMostFrequent.class)
+                .aggregate(VarcharApproximateMostFrequent.class);
+
+        // timestamp operators and functions
+        builder
+                .scalar(TimestampOperators.Equal.class)
+                .scalar(TimestampOperators.NotEqual.class)
+                .scalar(TimestampOperators.LessThan.class)
+                .scalar(TimestampOperators.LessThanOrEqual.class)
+                .scalar(TimestampOperators.GreaterThan.class)
+                .scalar(TimestampOperators.GreaterThanOrEqual.class)
+                .scalar(TimestampDistinctFromOperator.class)
+                .scalar(TimestampOperators.HashCode.class)
+                .scalar(TimestampOperators.Indeterminate.class)
+                .scalar(TimestampOperators.XxHash64Operator.class)
+                .scalar(TimestampOperators.TimestampPlusIntervalDayToSecond.class)
+                .scalar(TimestampOperators.IntervalDayToSecondPlusTimestamp.class)
+                .scalar(TimestampOperators.TimestampPlusIntervalYearToMonth.class)
+                .scalar(TimestampOperators.IntervalYearToMonthPlusTimestamp.class)
+                .scalar(TimestampOperators.TimestampMinusIntervalDayToSecond.class)
+                .scalar(TimestampOperators.TimestampMinusIntervalYearToMonth.class)
+                .scalar(TimestampOperators.TimestampMinusTimestamp.class)
+                .scalar(TimestampToTimestampCast.class)
+                .scalar(TimestampToTimeCast.class)
+                .scalar(TimestampToTimeWithTimezoneCast.class)
+                .scalar(TimestampToTimestampWithTimezoneCast.class)
+                .scalar(TimestampToDateCast.class)
+                .scalar(TimestampToVarcharCast.class)
+                .scalar(TimestampToJsonCast.class)
+                .scalar(DateToTimestampCast.class)
+                .scalar(TimeToTimestampCast.class)
+                .scalar(TimeWithTimezoneToTimestampCast.class)
+                .scalar(TimestampWithTimezoneToTimestampCast.class)
+                .scalar(VarcharToTimestampCast.class)
+                .scalar(LocalTimestamp.class)
+                .scalar(DateTrunc.class)
+                .scalar(ToUnixTime.class)
+                .scalar(ToIso8601.class)
+                .scalar(WithTimeZone.class)
+                .scalar(FormatDateTime.class)
+                .scalar(DateFormat.class)
+                .scalar(SequenceIntervalYearToMonth.class)
+                .scalar(SequenceIntervalDayToSecond.class)
+                .scalar(DateAdd.class)
+                .scalar(DateDiff.class)
+                .scalar(ExtractYear.class)
+                .scalar(ExtractQuarter.class)
+                .scalar(ExtractMonth.class)
+                .scalar(ExtractDay.class)
+                .scalar(ExtractHour.class)
+                .scalar(ExtractMinute.class)
+                .scalar(ExtractSecond.class)
+                .scalar(ExtractMillisecond.class)
+                .scalar(ExtractDayOfYear.class)
+                .scalar(ExtractDayOfWeek.class)
+                .scalar(ExtractWeekOfYear.class)
+                .scalar(ExtractYearOfWeek.class)
+                .scalar(LastDayOfMonth.class);
+
+        // timestamp with timezone operators and functions
+        builder
+                .scalar(TimestampWithTimeZoneOperators.Equal.class)
+                .scalar(TimestampWithTimeZoneOperators.NotEqual.class)
+                .scalar(TimestampWithTimeZoneOperators.LessThan.class)
+                .scalar(TimestampWithTimeZoneOperators.LessThanOrEqual.class)
+                .scalar(TimestampWithTimeZoneOperators.GreaterThan.class)
+                .scalar(TimestampWithTimeZoneOperators.GreaterThanOrEqual.class)
+                .scalar(TimestampWithTimeZoneOperators.HashCode.class)
+                .scalar(TimestampWithTimeZoneOperators.Indeterminate.class)
+                .scalar(TimestampWithTimeZoneOperators.XxHash64Operator.class)
+                .scalar(TimestampWithTimeZoneDistinctFromOperator.class)
+                .scalar(TimestampWithTimeZoneOperators.TimestampPlusIntervalDayToSecond.class)
+                .scalar(TimestampWithTimeZoneOperators.IntervalDayToSecondPlusTimestamp.class)
+                .scalar(TimestampWithTimeZoneOperators.TimestampMinusIntervalDayToSecond.class)
+                .scalar(TimestampWithTimeZoneOperators.TimestampPlusIntervalYearToMonth.class)
+                .scalar(TimestampWithTimeZoneOperators.IntervalYearToMonthPlusTimestamp.class)
+                .scalar(TimestampWithTimeZoneOperators.TimestampMinusIntervalYearToMonth.class)
+                .scalar(TimestampWithTimeZoneOperators.TimestampMinusTimestamp.class)
+                .scalar(CurrentTimestamp.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractYear.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractQuarter.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractMonth.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractDay.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractHour.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractMinute.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractSecond.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractMillisecond.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractDayOfYear.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractDayOfWeek.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractWeekOfYear.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ExtractYearOfWeek.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ToIso8601.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.DateAdd.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.DateTrunc.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.TimeZoneHour.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.TimeZoneMinute.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.DateDiff.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.DateFormat.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.FormatDateTime.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.ToUnixTime.class)
+                .scalar(io.prestosql.operator.scalar.timestamptz.LastDayOfMonth.class)
+                .scalar(AtTimeZone.class)
+                .scalar(AtTimeZoneWithOffset.class)
+                .scalar(DateToTimestampWithTimeZoneCast.class)
+                .scalar(TimestampWithTimeZoneToDateCast.class)
+                .scalar(TimestampWithTimeZoneToTimeCast.class)
+                .scalar(TimestampWithTimeZoneToTimestampWithTimeZoneCast.class)
+                .scalar(TimestampWithTimeZoneToTimeWithTimezoneCast.class)
+                .scalar(TimestampWithTimeZoneToVarcharCast.class)
+                .scalar(TimeToTimestampWithTimeZoneCast.class)
+                .scalar(TimeWithTimeZoneToTimestampWithTimeZoneCast.class)
+                .scalar(VarcharToTimestampWithTimeZoneCast.class);
 
         switch (featuresConfig.getRegexLibrary()) {
             case JONI:
@@ -613,7 +768,7 @@ public class FunctionRegistry
     {
         for (SqlFunction function : functions) {
             FunctionMetadata functionMetadata = function.getFunctionMetadata();
-            checkArgument(!functionMetadata.getSignature().getName().contains("|"), "Function name can not contain '|' character: %s", functionMetadata.getSignature());
+            checkArgument(!functionMetadata.getSignature().getName().contains("|"), "Function name cannot contain '|' character: %s", functionMetadata.getSignature());
             for (FunctionMetadata existingFunction : this.functions.list()) {
                 checkArgument(!functionMetadata.getFunctionId().equals(existingFunction.getFunctionId()), "Function already registered: %s", functionMetadata.getFunctionId());
                 checkArgument(!functionMetadata.getSignature().equals(existingFunction.getSignature()), "Function already registered: %s", functionMetadata.getSignature());
@@ -637,28 +792,24 @@ public class FunctionRegistry
         return functions.get(functionId).getFunctionMetadata();
     }
 
-    public AggregationFunctionMetadata getAggregationFunctionMetadata(Metadata metadata, ResolvedFunction resolvedFunction)
+    public AggregationFunctionMetadata getAggregationFunctionMetadata(FunctionBinding functionBinding)
     {
-        SqlFunction function = functions.get(resolvedFunction.getFunctionId());
-        checkArgument(function instanceof SqlAggregationFunction, "%s is not an aggregation function", resolvedFunction);
+        SqlFunction function = functions.get(functionBinding.getFunctionId());
+        checkArgument(function instanceof SqlAggregationFunction, "%s is not an aggregation function", functionBinding.getBoundSignature());
 
         SqlAggregationFunction aggregationFunction = (SqlAggregationFunction) function;
-        if (!aggregationFunction.isDecomposable()) {
-            return new AggregationFunctionMetadata(aggregationFunction.isOrderSensitive(), Optional.empty());
-        }
-
-        InternalAggregationFunction implementation = getAggregateFunctionImplementation(metadata, resolvedFunction);
-        return new AggregationFunctionMetadata(aggregationFunction.isOrderSensitive(), Optional.of(implementation.getIntermediateType().getTypeSignature()));
+        return aggregationFunction.getAggregationMetadata(functionBinding);
     }
 
-    public WindowFunctionSupplier getWindowFunctionImplementation(Metadata metadata, ResolvedFunction resolvedFunction)
+    public WindowFunctionSupplier getWindowFunctionImplementation(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
-        SpecializedFunctionKey key = getSpecializedFunctionKey(metadata, resolvedFunction);
+        SqlFunction function = functions.get(functionBinding.getFunctionId());
         try {
-            if (key.getFunction() instanceof SqlAggregationFunction) {
-                return supplier(key.getFunction().getFunctionMetadata().getSignature(), specializedAggregationCache.get(key, () -> specializedAggregation(metadata, key)));
+            if (function instanceof SqlAggregationFunction) {
+                InternalAggregationFunction aggregationFunction = specializedAggregationCache.get(functionBinding, () -> specializedAggregation(functionBinding, functionDependencies));
+                return supplier(function.getFunctionMetadata().getSignature(), aggregationFunction);
             }
-            return specializedWindowCache.get(key, () -> specializeWindow(metadata, key));
+            return specializedWindowCache.get(functionBinding, () -> specializeWindow(functionBinding, functionDependencies));
         }
         catch (ExecutionException | UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), PrestoException.class);
@@ -666,17 +817,16 @@ public class FunctionRegistry
         }
     }
 
-    private static WindowFunctionSupplier specializeWindow(Metadata metadata, SpecializedFunctionKey key)
+    private WindowFunctionSupplier specializeWindow(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
-        return ((SqlWindowFunction) key.getFunction())
-                .specialize(key.getBoundVariables(), key.getArity(), metadata);
+        SqlWindowFunction function = (SqlWindowFunction) functions.get(functionBinding.getFunctionId());
+        return function.specialize(functionBinding, functionDependencies);
     }
 
-    public InternalAggregationFunction getAggregateFunctionImplementation(Metadata metadata, ResolvedFunction resolvedFunction)
+    public InternalAggregationFunction getAggregateFunctionImplementation(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
-        SpecializedFunctionKey key = getSpecializedFunctionKey(metadata, resolvedFunction);
         try {
-            return specializedAggregationCache.get(key, () -> specializedAggregation(metadata, key));
+            return specializedAggregationCache.get(functionBinding, () -> specializedAggregation(functionBinding, functionDependencies));
         }
         catch (ExecutionException | UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), PrestoException.class);
@@ -684,69 +834,39 @@ public class FunctionRegistry
         }
     }
 
-    private static InternalAggregationFunction specializedAggregation(Metadata metadata, SpecializedFunctionKey key)
+    private InternalAggregationFunction specializedAggregation(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
-        SqlAggregationFunction function = (SqlAggregationFunction) key.getFunction();
-        InternalAggregationFunction implementation = function.specialize(key.getBoundVariables(), key.getArity(), metadata);
-        checkArgument(
-                function.isOrderSensitive() == implementation.isOrderSensitive(),
-                "implementation order sensitivity doesn't match for: %s",
-                function.getFunctionMetadata().getSignature());
-        checkArgument(
-                function.isDecomposable() == implementation.isDecomposable(),
-                "implementation decomposable doesn't match for: %s",
-                function.getFunctionMetadata().getSignature());
-        return implementation;
+        SqlAggregationFunction function = (SqlAggregationFunction) functions.get(functionBinding.getFunctionId());
+        return function.specialize(functionBinding, functionDependencies);
     }
 
-    public ScalarFunctionImplementation getScalarFunctionImplementation(Metadata metadata, ResolvedFunction resolvedFunction)
+    public FunctionDependencyDeclaration getFunctionDependencies(FunctionBinding functionBinding)
     {
-        SpecializedFunctionKey key = getSpecializedFunctionKey(metadata, resolvedFunction);
+        SqlFunction function = functions.get(functionBinding.getFunctionId());
+        return function.getFunctionDependencies(functionBinding);
+    }
+
+    public FunctionInvoker getScalarFunctionInvoker(
+            FunctionBinding functionBinding,
+            FunctionDependencies functionDependencies,
+            InvocationConvention invocationConvention)
+    {
+        ScalarFunctionImplementation scalarFunctionImplementation;
         try {
-            return specializedScalarCache.get(key, () -> specializeScalarFunction(metadata, key));
+            scalarFunctionImplementation = specializedScalarCache.get(functionBinding, () -> specializeScalarFunction(functionBinding, functionDependencies));
         }
         catch (ExecutionException | UncheckedExecutionException e) {
             throwIfInstanceOf(e.getCause(), PrestoException.class);
             throw new RuntimeException(e.getCause());
         }
+        FunctionInvokerProvider functionInvokerProvider = new FunctionInvokerProvider();
+        return functionInvokerProvider.createFunctionInvoker(scalarFunctionImplementation, functionBinding.getBoundSignature(), invocationConvention);
     }
 
-    private static ScalarFunctionImplementation specializeScalarFunction(Metadata metadata, SpecializedFunctionKey key)
+    private ScalarFunctionImplementation specializeScalarFunction(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
-        SqlScalarFunction function = (SqlScalarFunction) key.getFunction();
-        ScalarFunctionImplementation specialize = function.specialize(key.getBoundVariables(), key.getArity(), metadata);
-        FunctionMetadata functionMetadata = function.getFunctionMetadata();
-        for (ScalarImplementationChoice choice : specialize.getAllChoices()) {
-            checkArgument(choice.isNullable() == functionMetadata.isNullable(), "choice nullability doesn't match for: " + functionMetadata.getSignature());
-            for (int i = 0; i < choice.getArgumentProperties().size(); i++) {
-                ArgumentProperty argumentProperty = choice.getArgumentProperty(i);
-                int functionArgumentIndex = functionMetadata.getSignature().isVariableArity() ? min(i, functionMetadata
-                        .getSignature().getArgumentTypes().size() - 1) : i;
-                boolean functionPropertyNullability = functionMetadata.getArgumentDefinitions().get(functionArgumentIndex).isNullable();
-                if (argumentProperty.getArgumentType() == ArgumentType.FUNCTION_TYPE) {
-                    checkArgument(!functionPropertyNullability, "choice function argument must not be nullable: " + functionMetadata.getSignature());
-                }
-                else if (argumentProperty.getNullConvention() != BLOCK_AND_POSITION) {
-                    boolean choiceNullability = argumentProperty.getNullConvention() != RETURN_NULL_ON_NULL;
-                    checkArgument(functionPropertyNullability == choiceNullability, "choice function argument nullability doesn't match for: " + functionMetadata
-                            .getSignature());
-                }
-            }
-        }
-        return specialize;
-    }
-
-    private SpecializedFunctionKey getSpecializedFunctionKey(Metadata metadata, ResolvedFunction resolvedFunction)
-    {
-        SqlFunction function = functions.get(resolvedFunction.getFunctionId());
-        Signature signature = resolvedFunction.getSignature();
-        BoundVariables boundVariables = new SignatureBinder(metadata, function.getFunctionMetadata().getSignature(), false)
-                .bindVariables(fromTypeSignatures(signature.getArgumentTypes()), signature.getReturnType())
-                .orElseThrow(() -> new IllegalArgumentException("Could not extract bound variables"));
-        return new SpecializedFunctionKey(
-                function,
-                boundVariables,
-                signature.getArgumentTypes().size());
+        SqlScalarFunction function = (SqlScalarFunction) functions.get(functionBinding.getFunctionId());
+        return function.specialize(functionBinding, functionDependencies);
     }
 
     private static class FunctionMap

@@ -13,6 +13,7 @@
  */
 package io.prestosql.sql.gen;
 
+import com.google.common.base.Throwables;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
@@ -30,6 +31,7 @@ import io.airlift.bytecode.Scope;
 import io.airlift.bytecode.Variable;
 import io.airlift.bytecode.control.ForLoop;
 import io.airlift.bytecode.control.IfStatement;
+import io.airlift.jmx.CacheStatsMBean;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.Work;
 import io.prestosql.operator.project.ConstantPageProjection;
@@ -54,6 +56,7 @@ import io.prestosql.sql.relational.InputReferenceExpression;
 import io.prestosql.sql.relational.LambdaDefinitionExpression;
 import io.prestosql.sql.relational.RowExpression;
 import io.prestosql.sql.relational.RowExpressionVisitor;
+import org.objectweb.asm.MethodTooLargeException;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
@@ -194,6 +197,10 @@ public class PageFunctionCompiler
             pageProjectionWorkClass = defineClass(pageProjectionWorkDefinition, Work.class, callSiteBinder.getBindings(), getClass().getClassLoader());
         }
         catch (Exception e) {
+            if (Throwables.getRootCause(e) instanceof MethodTooLargeException) {
+                throw new PrestoException(COMPILER_ERROR,
+                        "Query exceeded maximum columns. Please reduce the number of columns referenced and re-run the query.", e);
+            }
             throw new PrestoException(COMPILER_ERROR, e);
         }
 
@@ -379,6 +386,10 @@ public class PageFunctionCompiler
             functionClass = defineClass(classDefinition, PageFilter.class, callSiteBinder.getBindings(), getClass().getClassLoader());
         }
         catch (Exception e) {
+            if (Throwables.getRootCause(e) instanceof MethodTooLargeException) {
+                throw new PrestoException(COMPILER_ERROR,
+                        "Query exceeded maximum filters. Please reduce the number of filters referenced and re-run the query.", e);
+            }
             throw new PrestoException(COMPILER_ERROR, filter.toString(), e.getCause());
         }
 

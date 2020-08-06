@@ -98,6 +98,7 @@ public class BeginTableWrite
                     node.getFragmentSymbol(),
                     node.getColumns(),
                     node.getColumnNames(),
+                    node.getNotNullColumnSymbols(),
                     node.getPartitioningScheme(),
                     node.getStatisticsAggregation(),
                     node.getStatisticsAggregationDescriptor());
@@ -180,7 +181,7 @@ public class BeginTableWrite
             }
             if (target instanceof InsertReference) {
                 InsertReference insert = (InsertReference) target;
-                return new InsertTarget(metadata.beginInsert(session, insert.getHandle()), metadata.getTableMetadata(session, insert.getHandle()).getTable());
+                return new InsertTarget(metadata.beginInsert(session, insert.getHandle(), insert.getColumns()), metadata.getTableMetadata(session, insert.getHandle()).getTable());
             }
             if (target instanceof DeleteTarget) {
                 DeleteTarget delete = (DeleteTarget) target;
@@ -231,7 +232,7 @@ public class BeginTableWrite
 
         public void addMaterializedHandle(WriterTarget handle, WriterTarget materializedHandle)
         {
-            checkState(!this.handle.isPresent(), "can only have one WriterTarget in a subtree");
+            checkState(this.handle.isEmpty(), "can only have one WriterTarget in a subtree");
             this.handle = Optional.of(handle);
             this.materializedHandle = Optional.of(materializedHandle);
         }

@@ -46,6 +46,7 @@ public class TestStaticSelector
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                Optional.empty(),
                 new ResourceGroupIdTemplate("global.foo"));
         assertEquals(selector.match(newSelectionCriteria("userA", null, ImmutableSet.of("tag1"), EMPTY_RESOURCE_ESTIMATES)).map(SelectionContext::getResourceGroupId), Optional.of(resourceGroupId));
         assertEquals(selector.match(newSelectionCriteria("userB", "source", ImmutableSet.of(), EMPTY_RESOURCE_ESTIMATES)).map(SelectionContext::getResourceGroupId), Optional.of(resourceGroupId));
@@ -57,6 +58,7 @@ public class TestStaticSelector
     {
         ResourceGroupId resourceGroupId = new ResourceGroupId(new ResourceGroupId("global"), "foo");
         StaticSelector selector = new StaticSelector(
+                Optional.empty(),
                 Optional.empty(),
                 Optional.of(Pattern.compile(".*source.*")),
                 Optional.empty(),
@@ -75,6 +77,7 @@ public class TestStaticSelector
         StaticSelector selector = new StaticSelector(
                 Optional.empty(),
                 Optional.empty(),
+                Optional.empty(),
                 Optional.of(ImmutableList.of("tag1", "tag2")),
                 Optional.empty(),
                 Optional.empty(),
@@ -91,6 +94,7 @@ public class TestStaticSelector
         ResourceGroupId resourceGroupId = new ResourceGroupId(new ResourceGroupId("global"), "foo");
 
         StaticSelector smallQuerySelector = new StaticSelector(
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
@@ -114,7 +118,7 @@ public class TestStaticSelector
                                 new ResourceEstimates(
                                         Optional.of(java.time.Duration.ofMinutes(4)),
                                         Optional.empty(),
-                                        Optional.of(new DataSize(400, MEGABYTE).toBytes()))))
+                                        Optional.of(DataSize.of(400, MEGABYTE).toBytes()))))
                         .map(SelectionContext::getResourceGroupId),
                 Optional.of(resourceGroupId));
 
@@ -127,7 +131,7 @@ public class TestStaticSelector
                                 new ResourceEstimates(
                                         Optional.of(java.time.Duration.ofMinutes(4)),
                                         Optional.empty(),
-                                        Optional.of(new DataSize(600, MEGABYTE).toBytes()))))
+                                        Optional.of(DataSize.of(600, MEGABYTE).toBytes()))))
                         .map(SelectionContext::getResourceGroupId),
                 Optional.empty());
 
@@ -145,6 +149,7 @@ public class TestStaticSelector
                 Optional.empty());
 
         StaticSelector largeQuerySelector = new StaticSelector(
+                Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
@@ -166,7 +171,7 @@ public class TestStaticSelector
                                 new ResourceEstimates(
                                         Optional.of(java.time.Duration.ofHours(100)),
                                         Optional.empty(),
-                                        Optional.of(new DataSize(4, TERABYTE).toBytes()))))
+                                        Optional.of(DataSize.of(4, TERABYTE).toBytes()))))
                         .map(SelectionContext::getResourceGroupId),
                 Optional.empty());
 
@@ -179,7 +184,7 @@ public class TestStaticSelector
                                 new ResourceEstimates(
                                         Optional.empty(),
                                         Optional.empty(),
-                                        Optional.of(new DataSize(6, TERABYTE).toBytes()))))
+                                        Optional.of(DataSize.of(6, TERABYTE).toBytes()))))
                         .map(SelectionContext::getResourceGroupId),
                 Optional.of(resourceGroupId));
 
@@ -192,13 +197,13 @@ public class TestStaticSelector
                                 new ResourceEstimates(
                                         Optional.of(java.time.Duration.ofSeconds(1)),
                                         Optional.of(java.time.Duration.ofSeconds(1)),
-                                        Optional.of(new DataSize(6, TERABYTE).toBytes()))))
+                                        Optional.of(DataSize.of(6, TERABYTE).toBytes()))))
                         .map(SelectionContext::getResourceGroupId),
                 Optional.of(resourceGroupId));
     }
 
     private SelectionCriteria newSelectionCriteria(String user, String source, Set<String> tags, ResourceEstimates resourceEstimates)
     {
-        return new SelectionCriteria(true, user, Optional.ofNullable(source), tags, resourceEstimates, Optional.empty());
+        return new SelectionCriteria(true, user, ImmutableSet.of(), Optional.ofNullable(source), tags, resourceEstimates, Optional.empty());
     }
 }

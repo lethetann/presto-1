@@ -107,7 +107,7 @@ public class PushPredicateIntoTableScan
                 typeAnalyzer,
                 domainTranslator);
 
-        if (!rewritten.isPresent() || arePlansSame(filterNode, tableScan, rewritten.get())) {
+        if (rewritten.isEmpty() || arePlansSame(filterNode, tableScan, rewritten.get())) {
             return Result.empty();
         }
 
@@ -131,7 +131,8 @@ public class PushPredicateIntoTableScan
 
         TableScanNode rewrittenTableScan = (TableScanNode) rewrittenFilter.getSource();
 
-        return Objects.equals(tableScan.getEnforcedConstraint(), rewrittenTableScan.getEnforcedConstraint());
+        return Objects.equals(tableScan.getEnforcedConstraint(), rewrittenTableScan.getEnforcedConstraint()) &&
+                Objects.equals(tableScan.getTable(), rewrittenTableScan.getTable());
     }
 
     public static Optional<PlanNode> pushFilterIntoTableScan(
@@ -176,7 +177,7 @@ public class PushPredicateIntoTableScan
                             // Simplify the tuple domain to avoid creating an expression with too many nodes,
                             // which would be expensive to evaluate in the call to isCandidate below.
                             domainTranslator.toPredicate(newDomain.simplify().transform(assignments::get))));
-            constraint = new Constraint(newDomain, evaluator::isCandidate);
+            constraint = new Constraint(newDomain, evaluator::isCandidate, evaluator.getArguments());
         }
         else {
             // Currently, invoking the expression interpreter is very expensive.
@@ -188,7 +189,7 @@ public class PushPredicateIntoTableScan
         TupleDomain<ColumnHandle> remainingFilter;
         if (!metadata.usesLegacyTableLayouts(session, node.getTable())) {
             // check if new domain is wider than domain already provided by table scan
-            if (!constraint.predicate().isPresent() && newDomain.contains(node.getEnforcedConstraint())) {
+            if (constraint.predicate().isEmpty() && newDomain.contains(node.getEnforcedConstraint())) {
                 Expression resultingPredicate = createResultingPredicate(
                         metadata,
                         TRUE_LITERAL,
@@ -211,7 +212,7 @@ public class PushPredicateIntoTableScan
 
             Optional<ConstraintApplicationResult<TableHandle>> result = metadata.applyFilter(session, node.getTable(), constraint);
 
-            if (!result.isPresent()) {
+            if (result.isEmpty()) {
                 return Optional.empty();
             }
 
@@ -232,7 +233,7 @@ public class PushPredicateIntoTableScan
                             .map(node.getAssignments()::get)
                             .collect(toImmutableSet())));
 
-            if (!layout.isPresent() || layout.get().getTableProperties().getPredicate().isNone()) {
+            if (layout.isEmpty() || layout.get().getTableProperties().getPredicate().isNone()) {
                 return Optional.of(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
             }
 
@@ -293,6 +294,11 @@ public class PushPredicateIntoTableScan
                     .collect(toImmutableSet());
         }
 
+        public Set<ColumnHandle> getArguments()
+        {
+            return arguments;
+        }
+
         private boolean isCandidate(Map<ColumnHandle, NullableValue> bindings)
         {
             if (intersection(bindings.keySet(), arguments).isEmpty()) {
@@ -305,11 +311,7 @@ public class PushPredicateIntoTableScan
             Object optimized = TryFunction.evaluate(() -> evaluator.optimize(inputs), true);
 
             // If any conjuncts evaluate to FALSE or null, then the whole predicate will never be true and so the partition should be pruned
-            if (Boolean.FALSE.equals(optimized) || optimized == null || optimized instanceof NullLiteral) {
-                return false;
-            }
-
-            return true;
+            return !(Boolean.FALSE.equals(optimized) || optimized == null || optimized instanceof NullLiteral);
         }
     }
 }

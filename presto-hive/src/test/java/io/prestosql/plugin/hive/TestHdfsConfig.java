@@ -19,7 +19,9 @@ import com.google.common.net.HostAndPort;
 import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
-import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -34,6 +36,7 @@ public class TestHdfsConfig
     {
         assertRecordedDefaults(recordDefaults(HdfsConfig.class)
                 .setResourceConfigFiles("")
+                .setNewDirectoryPermissions("0777")
                 .setVerifyChecksum(true)
                 .setIpcPingInterval(new Duration(10, TimeUnit.SECONDS))
                 .setDfsTimeout(new Duration(60, TimeUnit.SECONDS))
@@ -48,9 +51,14 @@ public class TestHdfsConfig
 
     @Test
     public void testExplicitPropertyMappings()
+            throws IOException
     {
+        Path resource1 = Files.createTempFile(null, null);
+        Path resource2 = Files.createTempFile(null, null);
+
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("hive.config.resources", "/foo.xml,/bar.xml")
+                .put("hive.config.resources", resource1.toString() + "," + resource2.toString())
+                .put("hive.fs.new-directory-permissions", "0700")
                 .put("hive.dfs.verify-checksum", "false")
                 .put("hive.dfs.ipc-ping-interval", "34s")
                 .put("hive.dfs-timeout", "33s")
@@ -64,7 +72,8 @@ public class TestHdfsConfig
                 .build();
 
         HdfsConfig expected = new HdfsConfig()
-                .setResourceConfigFiles(ImmutableList.of(new File("/foo.xml"), new File("/bar.xml")))
+                .setResourceConfigFiles(ImmutableList.of(resource1.toFile(), resource2.toFile()))
+                .setNewDirectoryPermissions("0700")
                 .setVerifyChecksum(false)
                 .setIpcPingInterval(new Duration(34, TimeUnit.SECONDS))
                 .setDfsTimeout(new Duration(33, TimeUnit.SECONDS))

@@ -139,7 +139,7 @@ public class TransformCorrelatedInPredicateToJoin
         Optional<Decorrelated> decorrelated = new DecorrelatingVisitor(lookup, apply.getCorrelation())
                 .decorrelate(apply.getSubquery());
 
-        if (!decorrelated.isPresent()) {
+        if (decorrelated.isEmpty()) {
             return Result.empty();
         }
 
@@ -249,16 +249,15 @@ public class TransformCorrelatedInPredicateToJoin
                 probeSide,
                 buildSide,
                 ImmutableList.of(),
-                ImmutableList.<Symbol>builder()
-                        .addAll(probeSide.getOutputSymbols())
-                        .addAll(buildSide.getOutputSymbols())
-                        .build(),
+                probeSide.getOutputSymbols(),
+                buildSide.getOutputSymbols(),
                 Optional.of(joinExpression),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                ImmutableMap.of());
+                ImmutableMap.of(),
+                Optional.empty());
     }
 
     private AggregationNode.Aggregation countWithFilter(Symbol filter)

@@ -17,11 +17,12 @@ import io.airlift.slice.Slice;
 import io.prestosql.Session;
 import io.prestosql.connector.CatalogName;
 import io.prestosql.operator.aggregation.InternalAggregationFunction;
-import io.prestosql.operator.scalar.ScalarFunctionImplementation;
 import io.prestosql.operator.window.WindowFunctionSupplier;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.block.BlockEncoding;
 import io.prestosql.spi.block.BlockEncodingSerde;
+import io.prestosql.spi.connector.AggregateFunction;
+import io.prestosql.spi.connector.AggregationApplicationResult;
 import io.prestosql.spi.connector.CatalogSchemaName;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
@@ -34,8 +35,11 @@ import io.prestosql.spi.connector.ConstraintApplicationResult;
 import io.prestosql.spi.connector.LimitApplicationResult;
 import io.prestosql.spi.connector.ProjectionApplicationResult;
 import io.prestosql.spi.connector.SampleType;
+import io.prestosql.spi.connector.SortItem;
 import io.prestosql.spi.connector.SystemTable;
+import io.prestosql.spi.connector.TopNApplicationResult;
 import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.function.InvocationConvention;
 import io.prestosql.spi.function.OperatorType;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.GrantInfo;
@@ -121,7 +125,7 @@ public interface Metadata
     List<QualifiedObjectName> listTables(Session session, QualifiedTablePrefix prefix);
 
     /**
-     * Gets all of the columns on the specified table, or an empty map if the columns can not be enumerated.
+     * Gets all of the columns on the specified table, or an empty map if the columns cannot be enumerated.
      *
      * @throws RuntimeException if table handle is no longer valid
      */
@@ -141,8 +145,10 @@ public interface Metadata
 
     /**
      * Creates a schema.
+     *
+     * @param principal TODO
      */
-    void createSchema(Session session, CatalogSchemaName schema, Map<String, Object> properties);
+    void createSchema(Session session, CatalogSchemaName schema, Map<String, Object> properties, PrestoPrincipal principal);
 
     /**
      * Drops the specified schema.
@@ -153,6 +159,11 @@ public interface Metadata
      * Renames the specified schema.
      */
     void renameSchema(Session session, CatalogSchemaName source, String target);
+
+    /**
+     * Set the specified schema's user/role.
+     */
+    void setSchemaAuthorization(Session session, CatalogSchemaName source, PrestoPrincipal principal);
 
     /**
      * Creates a table using the specified table metadata.
@@ -172,6 +183,11 @@ public interface Metadata
     void setTableComment(Session session, TableHandle tableHandle, Optional<String> comment);
 
     /**
+     * Comments to the specified column.
+     */
+    void setColumnComment(Session session, TableHandle tableHandle, ColumnHandle column, Optional<String> comment);
+
+    /**
      * Rename the specified column.
      */
     void renameColumn(Session session, TableHandle tableHandle, ColumnHandle source, String target);
@@ -189,7 +205,7 @@ public interface Metadata
     /**
      * Drops the specified table
      *
-     * @throws RuntimeException if the table can not be dropped or table handle is no longer valid
+     * @throws RuntimeException if the table cannot be dropped or table handle is no longer valid
      */
     void dropTable(Session session, TableHandle tableHandle);
 
@@ -236,7 +252,12 @@ public interface Metadata
     /**
      * Begin insert query
      */
-    InsertTableHandle beginInsert(Session session, TableHandle tableHandle);
+    InsertTableHandle beginInsert(Session session, TableHandle tableHandle, List<ColumnHandle> columns);
+
+    /**
+     * @return whether connector handles missing columns during insert
+     */
+    boolean supportsMissingColumnsOnInsert(Session session, TableHandle tableHandle);
 
     /**
      * Finish insert query
@@ -301,6 +322,16 @@ public interface Metadata
     Optional<ConnectorViewDefinition> getView(Session session, QualifiedObjectName viewName);
 
     /**
+     * Gets the schema properties for the specified schema.
+     */
+    Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName);
+
+    /**
+     * Gets the schema owner for the specified schema.
+     */
+    Optional<PrestoPrincipal> getSchemaOwner(Session session, CatalogSchemaName schemaName);
+
+    /**
      * Creates the specified view with the specified view definition.
      */
     void createView(Session session, QualifiedObjectName viewName, ConnectorViewDefinition definition, boolean replace);
@@ -331,6 +362,22 @@ public interface Metadata
 
     Optional<TableHandle> applySample(Session session, TableHandle table, SampleType sampleType, double sampleRatio);
 
+    Optional<AggregationApplicationResult<TableHandle>> applyAggregation(
+            Session session,
+            TableHandle table,
+            List<AggregateFunction> aggregations,
+            Map<String, ColumnHandle> assignments,
+            List<List<ColumnHandle>> groupingSets);
+
+    Optional<TopNApplicationResult<TableHandle>> applyTopN(
+            Session session,
+            TableHandle handle,
+            long topNCount,
+            List<SortItem> sortItems,
+            Map<String, ColumnHandle> assignments);
+
+    default void validateScan(Session session, TableHandle table) {}
+
     //
     // Roles and Grants
     //
@@ -353,6 +400,12 @@ public interface Metadata
     Set<String> listRoles(Session session, String catalog);
 
     /**
+     * List all role grants in the specified catalog,
+     * optionally filtered by passed role, grantee, and limit predicates.
+     */
+    Set<RoleGrant> listAllRoleGrants(Session session, String catalog, Optional<Set<String>> roles, Optional<Set<String>> grantees, OptionalLong limit);
+
+    /**
      * List roles grants in the specified catalog for a given principal, not recursively.
      */
     Set<RoleGrant> listRoleGrants(Session session, String catalog, PrestoPrincipal principal);
@@ -362,14 +415,14 @@ public interface Metadata
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    void grantRoles(Session session, Set<String> roles, Set<PrestoPrincipal> grantees, boolean withAdminOption, Optional<PrestoPrincipal> grantor, String catalog);
+    void grantRoles(Session session, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOption, Optional<PrestoPrincipal> grantor, String catalog);
 
     /**
      * Revokes the specified roles from the specified grantees in the specified catalog
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    void revokeRoles(Session session, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOptionFor, Optional<PrestoPrincipal> grantor, String catalog);
+    void revokeRoles(Session session, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOption, Optional<PrestoPrincipal> grantor, String catalog);
 
     /**
      * List applicable roles, including the transitive grants, for the specified principal
@@ -425,7 +478,7 @@ public interface Metadata
 
     List<FunctionMetadata> listFunctions();
 
-    FunctionInvokerProvider getFunctionInvokerProvider();
+    ResolvedFunction decodeFunction(QualifiedName name);
 
     ResolvedFunction resolveFunction(QualifiedName name, List<TypeSignatureProvider> parameterTypes);
 
@@ -455,7 +508,7 @@ public interface Metadata
 
     InternalAggregationFunction getAggregateFunctionImplementation(ResolvedFunction resolvedFunction);
 
-    ScalarFunctionImplementation getScalarFunctionImplementation(ResolvedFunction resolvedFunction);
+    FunctionInvoker getScalarFunctionInvoker(ResolvedFunction resolvedFunction, Optional<InvocationConvention> invocationConvention);
 
     ProcedureRegistry getProcedureRegistry();
 

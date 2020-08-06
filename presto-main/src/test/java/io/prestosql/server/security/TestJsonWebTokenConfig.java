@@ -16,6 +16,9 @@ package io.prestosql.server.security;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
@@ -30,22 +33,32 @@ public class TestJsonWebTokenConfig
         assertRecordedDefaults(recordDefaults(JsonWebTokenConfig.class)
                 .setKeyFile(null)
                 .setRequiredAudience(null)
-                .setRequiredIssuer(null));
+                .setRequiredIssuer(null)
+                .setUserMappingPattern(null)
+                .setUserMappingFile(null));
     }
 
     @Test
     public void testExplicitPropertyMappings()
+            throws IOException
     {
+        Path jwtKeyFile = Files.createTempFile(null, null);
+        Path userMappingFile = Files.createTempFile(null, null);
+
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("http.authentication.jwt.key-file", "public.pem")
-                .put("http.authentication.jwt.required-audience", "some-audience")
-                .put("http.authentication.jwt.required-issuer", "some-issuer")
+                .put("http-server.authentication.jwt.key-file", jwtKeyFile.toString())
+                .put("http-server.authentication.jwt.required-audience", "some-audience")
+                .put("http-server.authentication.jwt.required-issuer", "some-issuer")
+                .put("http-server.authentication.jwt.user-mapping.pattern", "(.*)@something")
+                .put("http-server.authentication.jwt.user-mapping.file", userMappingFile.toString())
                 .build();
 
         JsonWebTokenConfig expected = new JsonWebTokenConfig()
-                .setKeyFile("public.pem")
+                .setKeyFile(jwtKeyFile.toString())
                 .setRequiredAudience("some-audience")
-                .setRequiredIssuer("some-issuer");
+                .setRequiredIssuer("some-issuer")
+                .setUserMappingPattern("(.*)@something")
+                .setUserMappingFile(userMappingFile.toFile());
 
         assertFullMapping(properties, expected);
     }

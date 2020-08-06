@@ -88,6 +88,9 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.SessionTestUtils.TEST_SESSION;
 import static io.prestosql.block.BlockAssertions.createStringSequenceBlock;
 import static io.prestosql.block.BlockAssertions.createStringsBlock;
+import static io.prestosql.execution.TaskState.FINISHED;
+import static io.prestosql.execution.TaskState.FLUSHING;
+import static io.prestosql.execution.TaskState.RUNNING;
 import static io.prestosql.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
 import static io.prestosql.execution.TaskTestUtils.createTestSplitMonitor;
 import static io.prestosql.execution.buffer.BufferState.OPEN;
@@ -112,6 +115,7 @@ public class TestSqlTaskExecution
     private static final OutputBufferId OUTPUT_BUFFER_ID = new OutputBufferId(0);
     private static final CatalogName CONNECTOR_ID = new CatalogName("test");
     private static final Duration ASSERT_WAIT_TIMEOUT = new Duration(1, HOURS);
+    public static final TaskId TASK_ID = new TaskId("query", 0, 0);
 
     @DataProvider
     public static Object[][] executionStrategies()
@@ -129,7 +133,7 @@ public class TestSqlTaskExecution
         taskExecutor.start();
 
         try {
-            TaskStateMachine taskStateMachine = new TaskStateMachine(TaskId.valueOf("task-id"), taskNotificationExecutor);
+            TaskStateMachine taskStateMachine = new TaskStateMachine(TASK_ID, taskNotificationExecutor);
             PartitionedOutputBuffer outputBuffer = newTestingOutputBuffer(taskNotificationExecutor);
             OutputBufferConsumer outputBufferConsumer = new OutputBufferConsumer(outputBuffer, OUTPUT_BUFFER_ID);
 
@@ -176,7 +180,7 @@ public class TestSqlTaskExecution
 
             //
             // test body
-            assertEquals(taskStateMachine.getState(), TaskState.RUNNING);
+            assertEquals(taskStateMachine.getState(), RUNNING);
 
             switch (executionStrategy) {
                 case UNGROUPED_EXECUTION:
@@ -276,9 +280,9 @@ public class TestSqlTaskExecution
                     throw new UnsupportedOperationException();
             }
 
+            assertEquals(taskStateMachine.getStateChange(RUNNING).get(10, SECONDS), FLUSHING);
             outputBufferConsumer.abort(); // complete the task by calling abort on it
-            TaskState taskState = taskStateMachine.getStateChange(TaskState.RUNNING).get(10, SECONDS);
-            assertEquals(taskState, TaskState.FINISHED);
+            assertEquals(taskStateMachine.getStateChange(FLUSHING).get(10, SECONDS), FINISHED);
         }
         finally {
             taskExecutor.stop();
@@ -297,7 +301,7 @@ public class TestSqlTaskExecution
         taskExecutor.start();
 
         try {
-            TaskStateMachine taskStateMachine = new TaskStateMachine(TaskId.valueOf("task-id"), taskNotificationExecutor);
+            TaskStateMachine taskStateMachine = new TaskStateMachine(TASK_ID, taskNotificationExecutor);
             PartitionedOutputBuffer outputBuffer = newTestingOutputBuffer(taskNotificationExecutor);
             OutputBufferConsumer outputBufferConsumer = new OutputBufferConsumer(outputBuffer, OUTPUT_BUFFER_ID);
 
@@ -427,7 +431,7 @@ public class TestSqlTaskExecution
 
             //
             // test body
-            assertEquals(taskStateMachine.getState(), TaskState.RUNNING);
+            assertEquals(taskStateMachine.getState(), RUNNING);
 
             switch (executionStrategy) {
                 case UNGROUPED_EXECUTION:
@@ -578,9 +582,9 @@ public class TestSqlTaskExecution
                     throw new UnsupportedOperationException();
             }
 
+            assertEquals(taskStateMachine.getStateChange(RUNNING).get(10, SECONDS), FLUSHING);
             outputBufferConsumer.abort(); // complete the task by calling abort on it
-            TaskState taskState = taskStateMachine.getStateChange(TaskState.RUNNING).get(10, SECONDS);
-            assertEquals(taskState, TaskState.FINISHED);
+            assertEquals(taskStateMachine.getStateChange(FLUSHING).get(10, SECONDS), FINISHED);
         }
         finally {
             taskExecutor.stop();
@@ -593,26 +597,26 @@ public class TestSqlTaskExecution
     {
         QueryContext queryContext = new QueryContext(
                 new QueryId("queryid"),
-                new DataSize(1, MEGABYTE),
-                new DataSize(2, MEGABYTE),
-                new MemoryPool(new MemoryPoolId("test"), new DataSize(1, GIGABYTE)),
+                DataSize.of(1, MEGABYTE),
+                DataSize.of(2, MEGABYTE),
+                new MemoryPool(new MemoryPoolId("test"), DataSize.of(1, GIGABYTE)),
                 new TestingGcMonitor(),
                 taskNotificationExecutor,
                 driverYieldExecutor,
-                new DataSize(1, MEGABYTE),
-                new SpillSpaceTracker(new DataSize(1, GIGABYTE)));
+                DataSize.of(1, MEGABYTE),
+                new SpillSpaceTracker(DataSize.of(1, GIGABYTE)));
         return queryContext.addTaskContext(taskStateMachine, TEST_SESSION, false, false, OptionalInt.empty());
     }
 
     private PartitionedOutputBuffer newTestingOutputBuffer(ScheduledExecutorService taskNotificationExecutor)
     {
         return new PartitionedOutputBuffer(
-                "task-id",
+                TASK_ID.toString(),
                 new StateMachine<>("bufferState", taskNotificationExecutor, OPEN, TERMINAL_BUFFER_STATES),
                 createInitialEmptyOutputBuffers(PARTITIONED)
                         .withBuffer(OUTPUT_BUFFER_ID, 0)
                         .withNoMoreBufferIds(),
-                new DataSize(1, MEGABYTE),
+                DataSize.of(1, MEGABYTE),
                 () -> new SimpleLocalMemoryContext(newSimpleAggregatedMemoryContext(), "test"),
                 taskNotificationExecutor);
     }
@@ -655,7 +659,7 @@ public class TestSqlTaskExecution
             surplusPositions -= positions;
             while (surplusPositions < 0) {
                 assertFalse(bufferComplete, "bufferComplete is set before enough positions are consumed");
-                BufferResult results = outputBuffer.get(outputBufferId, sequenceId, new DataSize(1, MEGABYTE)).get(nanoUntil - System.nanoTime(), TimeUnit.NANOSECONDS);
+                BufferResult results = outputBuffer.get(outputBufferId, sequenceId, DataSize.of(1, MEGABYTE)).get(nanoUntil - System.nanoTime(), TimeUnit.NANOSECONDS);
                 bufferComplete = results.isBufferComplete();
                 for (SerializedPage serializedPage : results.getSerializedPages()) {
                     surplusPositions += serializedPage.getPositionCount();
@@ -670,7 +674,7 @@ public class TestSqlTaskExecution
             assertEquals(surplusPositions, 0);
             long nanoUntil = System.nanoTime() + timeout.toMillis() * 1_000_000;
             while (!bufferComplete) {
-                BufferResult results = outputBuffer.get(outputBufferId, sequenceId, new DataSize(1, MEGABYTE)).get(nanoUntil - System.nanoTime(), TimeUnit.NANOSECONDS);
+                BufferResult results = outputBuffer.get(outputBufferId, sequenceId, DataSize.of(1, MEGABYTE)).get(nanoUntil - System.nanoTime(), TimeUnit.NANOSECONDS);
                 bufferComplete = results.isBufferComplete();
                 for (SerializedPage serializedPage : results.getSerializedPages()) {
                     assertEquals(serializedPage.getPositionCount(), 0);
@@ -881,7 +885,7 @@ public class TestSqlTaskExecution
             @Override
             public void addInput(Page page)
             {
-                throw new UnsupportedOperationException(getClass().getName() + " can not take input");
+                throw new UnsupportedOperationException(getClass().getName() + " cannot take input");
             }
 
             @Override

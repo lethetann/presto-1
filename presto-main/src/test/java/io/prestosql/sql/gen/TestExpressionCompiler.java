@@ -24,21 +24,31 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import io.airlift.log.Logger;
 import io.airlift.log.Logging;
 import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
 import io.airlift.units.Duration;
 import io.prestosql.operator.scalar.BitwiseFunctions;
-import io.prestosql.operator.scalar.DateTimeFunctions;
 import io.prestosql.operator.scalar.FunctionAssertions;
 import io.prestosql.operator.scalar.JoniRegexpFunctions;
 import io.prestosql.operator.scalar.JsonFunctions;
 import io.prestosql.operator.scalar.JsonPath;
 import io.prestosql.operator.scalar.MathFunctions;
 import io.prestosql.operator.scalar.StringFunctions;
+import io.prestosql.operator.scalar.timestamp.ExtractDay;
+import io.prestosql.operator.scalar.timestamp.ExtractDayOfWeek;
+import io.prestosql.operator.scalar.timestamp.ExtractDayOfYear;
+import io.prestosql.operator.scalar.timestamp.ExtractHour;
+import io.prestosql.operator.scalar.timestamp.ExtractMinute;
+import io.prestosql.operator.scalar.timestamp.ExtractMonth;
+import io.prestosql.operator.scalar.timestamp.ExtractQuarter;
+import io.prestosql.operator.scalar.timestamp.ExtractSecond;
+import io.prestosql.operator.scalar.timestamp.ExtractWeekOfYear;
+import io.prestosql.operator.scalar.timestamp.ExtractYear;
+import io.prestosql.operator.scalar.timestamp.ExtractYearOfWeek;
+import io.prestosql.operator.scalar.timestamptz.TimeZoneHour;
+import io.prestosql.operator.scalar.timestamptz.TimeZoneMinute;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.SqlDecimal;
 import io.prestosql.spi.type.SqlTimestampWithTimeZone;
-import io.prestosql.spi.type.SqlVarbinary;
 import io.prestosql.spi.type.TimeZoneKey;
 import io.prestosql.spi.type.Type;
 import io.prestosql.spi.type.VarcharType;
@@ -88,6 +98,7 @@ import static io.prestosql.spi.type.VarcharType.VARCHAR;
 import static io.prestosql.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.prestosql.spi.type.VarcharType.createVarcharType;
 import static io.prestosql.testing.DateTimeTestingUtils.sqlTimestampOf;
+import static io.prestosql.testing.SqlVarbinaryTestingUtil.sqlVarbinary;
 import static io.prestosql.type.JsonType.JSON;
 import static io.prestosql.type.UnknownType.UNKNOWN;
 import static io.prestosql.util.DateTimeZoneIndex.getDateTimeZone;
@@ -209,8 +220,8 @@ public class TestExpressionCompiler
         assertExecute("10000000000 + 1", BIGINT, 10000000001L);
         assertExecute("4.2", createDecimalType(2, 1), new SqlDecimal(BigInteger.valueOf(42), 2, 1));
         assertExecute("DECIMAL '4.2'", createDecimalType(2, 1), new SqlDecimal(BigInteger.valueOf(42), 2, 1));
-        assertExecute("X' 1 f'", VARBINARY, new SqlVarbinary(Slices.wrappedBuffer((byte) 0x1f).getBytes()));
-        assertExecute("X' '", VARBINARY, new SqlVarbinary(new byte[0]));
+        assertExecute("X' 1 f'", VARBINARY, sqlVarbinary(0x1F));
+        assertExecute("X' '", VARBINARY, sqlVarbinary());
         assertExecute("bound_integer", INTEGER, 1234);
         assertExecute("bound_long", BIGINT, 1234L);
         assertExecute("bound_string", VARCHAR, "hello");
@@ -219,8 +230,8 @@ public class TestExpressionCompiler
         assertExecute("bound_timestamp", BIGINT, new DateTime(2001, 8, 22, 3, 4, 5, 321, UTC).getMillis());
         assertExecute("bound_pattern", VARCHAR, "%el%");
         assertExecute("bound_null_string", VARCHAR, null);
-        assertExecute("bound_timestamp_with_timezone", TIMESTAMP_WITH_TIME_ZONE, new SqlTimestampWithTimeZone(new DateTime(1970, 1, 1, 0, 1, 0, 999, DateTimeZone.UTC).getMillis(), TimeZoneKey.getTimeZoneKey("Z")));
-        assertExecute("bound_binary_literal", VARBINARY, new SqlVarbinary(new byte[] {(byte) 0xab}));
+        assertExecute("bound_timestamp_with_timezone", TIMESTAMP_WITH_TIME_ZONE, SqlTimestampWithTimeZone.newInstance(3, new DateTime(1970, 1, 1, 0, 1, 0, 999, DateTimeZone.UTC).getMillis(), 0, TimeZoneKey.getTimeZoneKey("Z")));
+        assertExecute("bound_binary_literal", VARBINARY, sqlVarbinary(0xAB));
 
         // todo enable when null output type is supported
         // assertExecute("null", null);
@@ -874,7 +885,7 @@ public class TestExpressionCompiler
         assertExecute("try_cast('foo' as varchar)", VARCHAR, "foo");
         assertExecute("try_cast('foo' as bigint)", BIGINT, null);
         assertExecute("try_cast('foo' as integer)", INTEGER, null);
-        assertExecute("try_cast('2001-08-22' as timestamp)", TIMESTAMP, sqlTimestampOf(2001, 8, 22, 0, 0, 0, 0, TEST_SESSION));
+        assertExecute("try_cast('2001-08-22' as timestamp)", TIMESTAMP, sqlTimestampOf(3, 2001, 8, 22, 0, 0, 0, 0, TEST_SESSION));
         assertExecute("try_cast(bound_string as bigint)", BIGINT, null);
         assertExecute("try_cast(cast(null as varchar) as bigint)", BIGINT, null);
         assertExecute("try_cast(bound_long / 13  as bigint)", BIGINT, 94L);
@@ -1322,6 +1333,18 @@ public class TestExpressionCompiler
         assertExecute("bound_timestamp_with_timezone in (" + timestampValues + ")", BOOLEAN, true);
         assertExecute("bound_timestamp_with_timezone in (TIMESTAMP '1970-01-01 01:01:00.0+02:00')", BOOLEAN, false);
 
+        String shortDecimalValues = range(2000, 7000)
+                .mapToObj(value -> format("decimal '%s'", value))
+                .collect(joining(", "));
+        assertExecute("bound_short_decimal in (1234, " + shortDecimalValues + ")", BOOLEAN, true);
+        assertExecute("bound_short_decimal in (" + shortDecimalValues + ")", BOOLEAN, false);
+
+        String longDecimalValues = range(2000, 7000)
+                .mapToObj(value -> format("decimal '123456789012345678901234567890%s'", value))
+                .collect(joining(", "));
+        assertExecute("bound_long_decimal in (1234, " + longDecimalValues + ")", BOOLEAN, true);
+        assertExecute("bound_long_decimal in (" + longDecimalValues + ")", BOOLEAN, false);
+
         Futures.allAsList(futures).get();
     }
 
@@ -1422,7 +1445,7 @@ public class TestExpressionCompiler
                         expected = null;
                     }
                     else {
-                        expected = StringFunctions.substr(utf8Slice(value), start, length).toStringUtf8();
+                        expected = StringFunctions.substring(utf8Slice(value), start, length).toStringUtf8();
                     }
                     VarcharType expectedType = value != null ? createVarcharType(value.length()) : VARCHAR;
 
@@ -1492,8 +1515,8 @@ public class TestExpressionCompiler
     public void testFunctionWithSessionCall()
             throws Exception
     {
-        assertExecute("now()", TIMESTAMP_WITH_TIME_ZONE, new SqlTimestampWithTimeZone(TEST_SESSION.getStartTime(), TEST_SESSION.getTimeZoneKey()));
-        assertExecute("current_timestamp", TIMESTAMP_WITH_TIME_ZONE, new SqlTimestampWithTimeZone(TEST_SESSION.getStartTime(), TEST_SESSION.getTimeZoneKey()));
+        assertExecute("now()", TIMESTAMP_WITH_TIME_ZONE, SqlTimestampWithTimeZone.newInstance(3, TEST_SESSION.getStart(), TEST_SESSION.getTimeZoneKey().getZoneId()));
+        assertExecute("current_timestamp", TIMESTAMP_WITH_TIME_ZONE, SqlTimestampWithTimeZone.newInstance(3, TEST_SESSION.getStart(), TEST_SESSION.getTimeZoneKey().getZoneId()));
 
         Futures.allAsList(futures).get();
     }
@@ -1508,7 +1531,7 @@ public class TestExpressionCompiler
                 Long millis = null;
                 if (left != null) {
                     millis = left.getMillis();
-                    expected = callExtractFunction(TEST_SESSION.toConnectorSession(), millis, field);
+                    expected = callExtractFunction(TEST_SESSION.toConnectorSession(), millis, 3, field);
                 }
                 DateTimeZone zone = getDateTimeZone(TEST_SESSION.getTimeZoneKey());
                 long zoneOffsetMinutes = millis != null ? MILLISECONDS.toMinutes(zone.getOffset(millis)) : 0;
@@ -1525,39 +1548,39 @@ public class TestExpressionCompiler
     }
 
     @SuppressWarnings("fallthrough")
-    private static long callExtractFunction(ConnectorSession session, long value, Field field)
+    private static long callExtractFunction(ConnectorSession session, long value, int precision, Field field)
     {
         switch (field) {
             case YEAR:
-                return DateTimeFunctions.yearFromTimestamp(session, value);
+                return ExtractYear.extract(precision, session, value);
             case QUARTER:
-                return DateTimeFunctions.quarterFromTimestamp(session, value);
+                return ExtractQuarter.extract(precision, session, value);
             case MONTH:
-                return DateTimeFunctions.monthFromTimestamp(session, value);
+                return ExtractMonth.extract(precision, session, value);
             case WEEK:
-                return DateTimeFunctions.weekFromTimestamp(session, value);
+                return ExtractWeekOfYear.extract(precision, session, value);
             case DAY:
             case DAY_OF_MONTH:
-                return DateTimeFunctions.dayFromTimestamp(session, value);
+                return ExtractDay.extract(precision, session, value);
             case DAY_OF_WEEK:
             case DOW:
-                return DateTimeFunctions.dayOfWeekFromTimestamp(session, value);
+                return ExtractDayOfWeek.extract(precision, session, value);
             case YEAR_OF_WEEK:
             case YOW:
-                return DateTimeFunctions.yearOfWeekFromTimestamp(session, value);
+                return ExtractYearOfWeek.extract(precision, session, value);
             case DAY_OF_YEAR:
             case DOY:
-                return DateTimeFunctions.dayOfYearFromTimestamp(session, value);
+                return ExtractDayOfYear.extract(precision, session, value);
             case HOUR:
-                return DateTimeFunctions.hourFromTimestamp(session, value);
+                return ExtractHour.extract(precision, session, value);
             case MINUTE:
-                return DateTimeFunctions.minuteFromTimestamp(session, value);
+                return ExtractMinute.extract(precision, session, value);
             case SECOND:
-                return DateTimeFunctions.secondFromTimestamp(value);
+                return ExtractSecond.extract(precision, session, value);
             case TIMEZONE_MINUTE:
-                return DateTimeFunctions.timeZoneMinuteFromTimestampWithTimeZone(packDateTimeWithZone(value, session.getTimeZoneKey()));
+                return TimeZoneMinute.extract(packDateTimeWithZone(value, session.getTimeZoneKey()));
             case TIMEZONE_HOUR:
-                return DateTimeFunctions.timeZoneHourFromTimestampWithTimeZone(packDateTimeWithZone(value, session.getTimeZoneKey()));
+                return TimeZoneHour.extract(packDateTimeWithZone(value, session.getTimeZoneKey()));
         }
         throw new AssertionError("Unhandled field: " + field);
     }
@@ -1840,7 +1863,7 @@ public class TestExpressionCompiler
                 ImmutableList.of(type));
     }
 
-    private static List<String> formatExpression(String expressionPattern, Object left, final String leftType, Object right, final String rightType)
+    private static List<String> formatExpression(String expressionPattern, Object left, String leftType, Object right, String rightType)
     {
         return formatExpression(expressionPattern,
                 Arrays.asList(left, right),

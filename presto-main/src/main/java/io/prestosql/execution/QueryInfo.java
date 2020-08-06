@@ -23,9 +23,13 @@ import io.prestosql.spi.ErrorCode;
 import io.prestosql.spi.ErrorType;
 import io.prestosql.spi.PrestoWarning;
 import io.prestosql.spi.QueryId;
+import io.prestosql.spi.eventlistener.RoutineInfo;
+import io.prestosql.spi.eventlistener.TableInfo;
 import io.prestosql.spi.memory.MemoryPoolId;
+import io.prestosql.spi.resourcegroups.QueryType;
 import io.prestosql.spi.resourcegroups.ResourceGroupId;
 import io.prestosql.spi.security.SelectedRole;
+import io.prestosql.sql.analyzer.Output;
 import io.prestosql.transaction.TransactionId;
 
 import javax.annotation.Nullable;
@@ -66,6 +70,8 @@ public class QueryInfo
     private final boolean clearTransactionId;
     private final String updateType;
     private final Optional<StageInfo> outputStage;
+    private final List<TableInfo> referencedTables;
+    private final List<RoutineInfo> routines;
     private final ExecutionFailureInfo failureInfo;
     private final ErrorType errorType;
     private final ErrorCode errorCode;
@@ -74,6 +80,7 @@ public class QueryInfo
     private final Optional<Output> output;
     private final boolean completeInfo;
     private final Optional<ResourceGroupId> resourceGroupId;
+    private final Optional<QueryType> queryType;
 
     @JsonCreator
     public QueryInfo(
@@ -104,8 +111,11 @@ public class QueryInfo
             @JsonProperty("warnings") List<PrestoWarning> warnings,
             @JsonProperty("inputs") Set<Input> inputs,
             @JsonProperty("output") Optional<Output> output,
+            @JsonProperty("referencedTables") List<TableInfo> referencedTables,
+            @JsonProperty("routines") List<RoutineInfo> routines,
             @JsonProperty("completeInfo") boolean completeInfo,
-            @JsonProperty("resourceGroupId") Optional<ResourceGroupId> resourceGroupId)
+            @JsonProperty("resourceGroupId") Optional<ResourceGroupId> resourceGroupId,
+            @JsonProperty("queryType") Optional<QueryType> queryType)
     {
         requireNonNull(queryId, "queryId is null");
         requireNonNull(session, "session is null");
@@ -126,8 +136,11 @@ public class QueryInfo
         requireNonNull(outputStage, "outputStage is null");
         requireNonNull(inputs, "inputs is null");
         requireNonNull(output, "output is null");
+        requireNonNull(referencedTables, "referencedTables is null");
+        requireNonNull(routines, "routines is null");
         requireNonNull(resourceGroupId, "resourceGroupId is null");
         requireNonNull(warnings, "warnings is null");
+        requireNonNull(queryType, "queryType is null");
 
         this.queryId = queryId;
         this.session = session;
@@ -157,8 +170,11 @@ public class QueryInfo
         this.warnings = ImmutableList.copyOf(warnings);
         this.inputs = ImmutableSet.copyOf(inputs);
         this.output = output;
+        this.referencedTables = ImmutableList.copyOf(referencedTables);
+        this.routines = ImmutableList.copyOf(routines);
         this.completeInfo = completeInfo;
         this.resourceGroupId = resourceGroupId;
+        this.queryType = queryType;
     }
 
     @JsonProperty
@@ -340,9 +356,27 @@ public class QueryInfo
     }
 
     @JsonProperty
+    public List<TableInfo> getReferencedTables()
+    {
+        return referencedTables;
+    }
+
+    @JsonProperty
+    public List<RoutineInfo> getRoutines()
+    {
+        return routines;
+    }
+
+    @JsonProperty
     public Optional<ResourceGroupId> getResourceGroupId()
     {
         return resourceGroupId;
+    }
+
+    @JsonProperty
+    public Optional<QueryType> getQueryType()
+    {
+        return queryType;
     }
 
     @Override

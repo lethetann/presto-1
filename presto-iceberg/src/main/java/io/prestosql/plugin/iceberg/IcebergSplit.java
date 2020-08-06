@@ -19,8 +19,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.prestosql.spi.HostAddress;
 import io.prestosql.spi.connector.ConnectorSplit;
-import io.prestosql.spi.predicate.TupleDomain;
+import org.apache.iceberg.FileFormat;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -33,8 +34,8 @@ public class IcebergSplit
     private final String path;
     private final long start;
     private final long length;
+    private final FileFormat fileFormat;
     private final List<HostAddress> addresses;
-    private final TupleDomain<IcebergColumnHandle> predicate;
     private final Map<Integer, String> partitionKeys;
 
     @JsonCreator
@@ -42,16 +43,16 @@ public class IcebergSplit
             @JsonProperty("path") String path,
             @JsonProperty("start") long start,
             @JsonProperty("length") long length,
+            @JsonProperty("fileFormat") FileFormat fileFormat,
             @JsonProperty("addresses") List<HostAddress> addresses,
-            @JsonProperty("predicate") TupleDomain<IcebergColumnHandle> predicate,
             @JsonProperty("partitionKeys") Map<Integer, String> partitionKeys)
     {
         this.path = requireNonNull(path, "path is null");
         this.start = start;
         this.length = length;
+        this.fileFormat = requireNonNull(fileFormat, "fileFormat is null");
         this.addresses = ImmutableList.copyOf(requireNonNull(addresses, "addresses is null"));
-        this.predicate = requireNonNull(predicate, "predicate is null");
-        this.partitionKeys = ImmutableMap.copyOf(requireNonNull(partitionKeys, "partitionKeys is null"));
+        this.partitionKeys = Collections.unmodifiableMap(requireNonNull(partitionKeys, "partitionKeys is null"));
     }
 
     @Override
@@ -86,9 +87,9 @@ public class IcebergSplit
     }
 
     @JsonProperty
-    public TupleDomain<IcebergColumnHandle> getPredicate()
+    public FileFormat getFileFormat()
     {
-        return predicate;
+        return fileFormat;
     }
 
     @JsonProperty

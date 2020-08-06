@@ -23,14 +23,16 @@ import io.airlift.units.Duration;
 import io.prestosql.client.QueryError;
 import io.prestosql.client.QueryResults;
 import io.prestosql.client.StatementStats;
-import io.prestosql.dispatcher.DispatcherConfig.HeaderSupport;
 import io.prestosql.execution.ExecutionFailureInfo;
 import io.prestosql.execution.QueryState;
 import io.prestosql.server.HttpRequestSessionContext;
 import io.prestosql.server.SessionContext;
 import io.prestosql.server.protocol.Slug;
+import io.prestosql.server.security.ResourceSecurity;
 import io.prestosql.spi.ErrorCode;
 import io.prestosql.spi.QueryId;
+import io.prestosql.spi.security.GroupProvider;
+import io.prestosql.spi.security.Identity;
 
 import javax.annotation.PreDestroy;
 import javax.annotation.concurrent.GuardedBy;
@@ -38,7 +40,6 @@ import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
-import javax.ws.rs.HeaderParam;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
@@ -48,8 +49,11 @@ import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.container.AsyncResponse;
 import javax.ws.rs.container.Suspended;
 import javax.ws.rs.core.Context;
+import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
+import javax.ws.rs.core.UriBuilder;
 import javax.ws.rs.core.UriInfo;
 
 import java.net.URI;
@@ -63,16 +67,17 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
-import static com.google.common.net.HttpHeaders.X_FORWARDED_PROTO;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.MoreFutures.addTimeout;
 import static io.airlift.concurrent.Threads.threadsNamed;
-import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
-import static io.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
+import static io.airlift.jaxrs.AsyncResponseHandler.bindAsyncResponse;
 import static io.prestosql.execution.QueryState.FAILED;
 import static io.prestosql.execution.QueryState.QUEUED;
+import static io.prestosql.server.HttpRequestSessionContext.AUTHENTICATED_IDENTITY;
 import static io.prestosql.server.protocol.Slug.Context.EXECUTING_QUERY;
 import static io.prestosql.server.protocol.Slug.Context.QUEUED_QUERY;
+import static io.prestosql.server.security.ResourceSecurity.AccessType.AUTHENTICATED_USER;
+import static io.prestosql.server.security.ResourceSecurity.AccessType.PUBLIC;
 import static io.prestosql.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
@@ -91,7 +96,7 @@ public class QueuedStatementResource
     private static final Ordering<Comparable<Duration>> WAIT_ORDERING = Ordering.natural().nullsLast();
     private static final Duration NO_DURATION = new Duration(0, MILLISECONDS);
 
-    private final HeaderSupport forwardedHeaderSupport;
+    private final GroupProvider groupProvider;
     private final DispatchManager dispatchManager;
 
     private final Executor responseExecutor;
@@ -102,12 +107,11 @@ public class QueuedStatementResource
 
     @Inject
     public QueuedStatementResource(
-            DispatcherConfig dispatcherConfig,
+            GroupProvider groupProvider,
             DispatchManager dispatchManager,
             DispatchExecutor executor)
     {
-        requireNonNull(dispatcherConfig, "dispatcherConfig is null");
-        this.forwardedHeaderSupport = dispatcherConfig.getForwardedHeaderSupport();
+        this.groupProvider = requireNonNull(groupProvider, "groupProvider is null");
         this.dispatchManager = requireNonNull(dispatchManager, "dispatchManager is null");
 
         requireNonNull(dispatchManager, "dispatchManager is null");
@@ -125,7 +129,16 @@ public class QueuedStatementResource
 
                             // forget about this query if the query manager is no longer tracking it
                             if (!dispatchManager.isQueryRegistered(entry.getKey())) {
-                                queries.remove(entry.getKey());
+                                Query query = queries.remove(entry.getKey());
+                                if (query != null) {
+                                    try {
+                                        query.destroy();
+                                    }
+                                    catch (Throwable e) {
+                                        // this catch clause is broad so query purger does not get stuck
+                                        log.warn(e, "Error destroying identity");
+                                    }
+                                }
                             }
                         }
                     }
@@ -144,25 +157,34 @@ public class QueuedStatementResource
         queryPurger.shutdownNow();
     }
 
+    @ResourceSecurity(AUTHENTICATED_USER)
     @POST
     @Produces(APPLICATION_JSON)
     public Response postStatement(
             String statement,
-            @HeaderParam(X_FORWARDED_PROTO) String xForwardedProto,
             @Context HttpServletRequest servletRequest,
+            @Context HttpHeaders httpHeaders,
             @Context UriInfo uriInfo)
     {
         if (isNullOrEmpty(statement)) {
             throw badRequest(BAD_REQUEST, "SQL statement is empty");
         }
 
-        SessionContext sessionContext = new HttpRequestSessionContext(forwardedHeaderSupport, servletRequest);
+        String remoteAddress = servletRequest.getRemoteAddr();
+        Optional<Identity> identity = Optional.ofNullable((Identity) servletRequest.getAttribute(AUTHENTICATED_IDENTITY));
+        MultivaluedMap<String, String> headers = httpHeaders.getRequestHeaders();
+
+        SessionContext sessionContext = new HttpRequestSessionContext(headers, remoteAddress, identity, groupProvider);
         Query query = new Query(statement, sessionContext, dispatchManager);
         queries.put(query.getQueryId(), query);
 
-        return Response.ok(query.getQueryResults(query.getLastToken(), uriInfo, xForwardedProto)).build();
+        // let authentication filter know that identity lifecycle has been handed off
+        servletRequest.setAttribute(AUTHENTICATED_IDENTITY, null);
+
+        return Response.ok(query.getQueryResults(query.getLastToken(), uriInfo)).build();
     }
 
+    @ResourceSecurity(PUBLIC)
     @GET
     @Path("queued/{queryId}/{slug}/{token}")
     @Produces(APPLICATION_JSON)
@@ -171,7 +193,6 @@ public class QueuedStatementResource
             @PathParam("slug") String slug,
             @PathParam("token") long token,
             @QueryParam("maxWait") Duration maxWait,
-            @HeaderParam(X_FORWARDED_PROTO) String xForwardedProto,
             @Context UriInfo uriInfo,
             @Suspended AsyncResponse asyncResponse)
     {
@@ -187,7 +208,7 @@ public class QueuedStatementResource
         // when state changes, fetch the next result
         ListenableFuture<QueryResults> queryResultsFuture = Futures.transform(
                 futureStateChange,
-                ignored -> query.getQueryResults(token, uriInfo, xForwardedProto),
+                ignored -> query.getQueryResults(token, uriInfo),
                 responseExecutor);
 
         // transform to Response
@@ -198,6 +219,7 @@ public class QueuedStatementResource
         bindAsyncResponse(asyncResponse, response, responseExecutor);
     }
 
+    @ResourceSecurity(PUBLIC)
     @DELETE
     @Path("queued/{queryId}/{slug}/{token}")
     @Produces(APPLICATION_JSON)
@@ -220,19 +242,17 @@ public class QueuedStatementResource
         return query;
     }
 
-    private static URI getQueryHtmlUri(QueryId queryId, UriInfo uriInfo, String xForwardedProto)
+    private static URI getQueryHtmlUri(QueryId queryId, UriInfo uriInfo)
     {
         return uriInfo.getRequestUriBuilder()
-                .scheme(getScheme(xForwardedProto, uriInfo))
                 .replacePath("ui/query.html")
                 .replaceQuery(queryId.toString())
                 .build();
     }
 
-    private static URI getQueuedUri(QueryId queryId, Slug slug, long token, UriInfo uriInfo, String xForwardedProto)
+    private static URI getQueuedUri(QueryId queryId, Slug slug, long token, UriInfo uriInfo)
     {
         return uriInfo.getBaseUriBuilder()
-                .scheme(getScheme(xForwardedProto, uriInfo))
                 .replacePath("/v1/statement/queued/")
                 .path(queryId.toString())
                 .path(slug.makeSlug(QUEUED_QUERY, token))
@@ -241,24 +261,18 @@ public class QueuedStatementResource
                 .build();
     }
 
-    private static String getScheme(String xForwardedProto, @Context UriInfo uriInfo)
-    {
-        return isNullOrEmpty(xForwardedProto) ? uriInfo.getRequestUri().getScheme() : xForwardedProto;
-    }
-
     private static QueryResults createQueryResults(
             QueryId queryId,
             URI nextUri,
             Optional<QueryError> queryError,
             UriInfo uriInfo,
-            String xForwardedProto,
             Duration elapsedTime,
             Duration queuedTime)
     {
         QueryState state = queryError.map(error -> FAILED).orElse(QUEUED);
         return new QueryResults(
                 queryId.toString(),
-                getQueryHtmlUri(queryId, uriInfo, xForwardedProto),
+                getQueryHtmlUri(queryId, uriInfo),
                 null,
                 nextUri,
                 null,
@@ -340,7 +354,7 @@ public class QueuedStatementResource
             return dispatchManager.waitForDispatched(queryId);
         }
 
-        public QueryResults getQueryResults(long token, UriInfo uriInfo, String xForwardedProto)
+        public QueryResults getQueryResults(long token, UriInfo uriInfo)
         {
             long lastToken = this.lastToken.get();
             // token should be the last token or the next token
@@ -356,20 +370,19 @@ public class QueuedStatementResource
                     return createQueryResults(
                             token + 1,
                             uriInfo,
-                            xForwardedProto,
                             DispatchInfo.queued(NO_DURATION, NO_DURATION));
                 }
             }
 
             Optional<DispatchInfo> dispatchInfo = dispatchManager.getDispatchInfo(queryId);
-            if (!dispatchInfo.isPresent()) {
+            if (dispatchInfo.isEmpty()) {
                 // query should always be found, but it may have just been determined to be abandoned
                 throw new WebApplicationException(Response
                         .status(NOT_FOUND)
                         .build());
             }
 
-            return createQueryResults(token + 1, uriInfo, xForwardedProto, dispatchInfo.get());
+            return createQueryResults(token + 1, uriInfo, dispatchInfo.get());
         }
 
         public synchronized void cancel()
@@ -377,9 +390,14 @@ public class QueuedStatementResource
             querySubmissionFuture.addListener(() -> dispatchManager.cancelQuery(queryId), directExecutor());
         }
 
-        private QueryResults createQueryResults(long token, UriInfo uriInfo, String xForwardedProto, DispatchInfo dispatchInfo)
+        public void destroy()
         {
-            URI nextUri = getNextUri(token, uriInfo, xForwardedProto, dispatchInfo);
+            sessionContext.getIdentity().destroy();
+        }
+
+        private QueryResults createQueryResults(long token, UriInfo uriInfo, DispatchInfo dispatchInfo)
+        {
+            URI nextUri = getNextUri(token, uriInfo, dispatchInfo);
 
             Optional<QueryError> queryError = dispatchInfo.getFailureInfo()
                     .map(this::toQueryError);
@@ -389,12 +407,11 @@ public class QueuedStatementResource
                     nextUri,
                     queryError,
                     uriInfo,
-                    xForwardedProto,
                     dispatchInfo.getElapsedTime(),
                     dispatchInfo.getQueuedTime());
         }
 
-        private URI getNextUri(long token, UriInfo uriInfo, String xForwardedProto, DispatchInfo dispatchInfo)
+        private URI getNextUri(long token, UriInfo uriInfo, DispatchInfo dispatchInfo)
         {
             // if failed, query is complete
             if (dispatchInfo.getFailureInfo().isPresent()) {
@@ -402,18 +419,18 @@ public class QueuedStatementResource
             }
             // if dispatched, redirect to new uri
             return dispatchInfo.getCoordinatorLocation()
-                            .map(coordinatorLocation -> getRedirectUri(coordinatorLocation, uriInfo, xForwardedProto))
-                            .orElseGet(() -> getQueuedUri(queryId, slug, token, uriInfo, xForwardedProto));
+                    .map(coordinatorLocation -> getRedirectUri(coordinatorLocation, uriInfo))
+                    .orElseGet(() -> getQueuedUri(queryId, slug, token, uriInfo));
         }
 
-        private URI getRedirectUri(CoordinatorLocation coordinatorLocation, UriInfo uriInfo, String xForwardedProto)
+        private URI getRedirectUri(CoordinatorLocation coordinatorLocation, UriInfo uriInfo)
         {
-            URI coordinatorUri = coordinatorLocation.getUri(uriInfo, xForwardedProto);
-            return uriBuilderFrom(coordinatorUri)
-                    .appendPath("/v1/statement/executing")
-                    .appendPath(queryId.toString())
-                    .appendPath(slug.makeSlug(EXECUTING_QUERY, 0))
-                    .appendPath("0")
+            URI coordinatorUri = coordinatorLocation.getUri(uriInfo);
+            return UriBuilder.fromUri(coordinatorUri)
+                    .replacePath("/v1/statement/executing")
+                    .path(queryId.toString())
+                    .path(slug.makeSlug(EXECUTING_QUERY, 0))
+                    .path("0")
                     .build();
         }
 

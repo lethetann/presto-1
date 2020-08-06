@@ -16,10 +16,10 @@ package io.prestosql.plugin.iceberg;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
 import io.airlift.log.Logging;
-import io.airlift.tpch.TpchTable;
 import io.prestosql.Session;
 import io.prestosql.plugin.tpch.TpchPlugin;
 import io.prestosql.testing.DistributedQueryRunner;
+import io.prestosql.tpch.TpchTable;
 
 import java.nio.file.Path;
 import java.util.Map;
@@ -37,6 +37,12 @@ public final class IcebergQueryRunner
     private IcebergQueryRunner() {}
 
     public static DistributedQueryRunner createIcebergQueryRunner(Map<String, String> extraProperties)
+            throws Exception
+    {
+        return createIcebergQueryRunner(extraProperties, true);
+    }
+
+    public static DistributedQueryRunner createIcebergQueryRunner(Map<String, String> extraProperties, boolean createTpchTables)
             throws Exception
     {
         Session session = testSessionBuilder()
@@ -63,7 +69,9 @@ public final class IcebergQueryRunner
 
         queryRunner.execute("CREATE SCHEMA tpch");
 
-        copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, session, TpchTable.getTables());
+        if (createTpchTables) {
+            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, session, TpchTable.getTables());
+        }
 
         return queryRunner;
     }

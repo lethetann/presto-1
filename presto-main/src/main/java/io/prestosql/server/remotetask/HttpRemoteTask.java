@@ -432,7 +432,7 @@ public final class HttpRemoteTask
 
     private synchronized void updateSplitQueueSpace()
     {
-        if (!whenSplitQueueHasSpaceThreshold.isPresent()) {
+        if (whenSplitQueueHasSpaceThreshold.isEmpty()) {
             return;
         }
         splitQueueHasSpace = getQueuedPartitionedSplitCount() < whenSplitQueueHasSpaceThreshold.getAsInt();
@@ -645,7 +645,7 @@ public final class HttpRemoteTask
 
     private void doScheduleAsyncCleanupRequest(Backoff cleanupBackoff, Request request, String action)
     {
-        Futures.addCallback(httpClient.executeAsync(request, createFullJsonResponseHandler(taskInfoCodec)), new FutureCallback<JsonResponse<TaskInfo>>()
+        Futures.addCallback(httpClient.executeAsync(request, createFullJsonResponseHandler(taskInfoCodec)), new FutureCallback<>()
         {
             @Override
             public void onSuccess(JsonResponse<TaskInfo> result)

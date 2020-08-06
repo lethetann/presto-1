@@ -14,7 +14,6 @@
 
 package io.prestosql.sql.planner;
 
-import com.google.common.base.Strings;
 import com.google.common.base.VerifyException;
 import com.google.common.io.Resources;
 import io.prestosql.plugin.tpcds.TpcdsTableHandle;
@@ -55,11 +54,6 @@ import static org.testng.Assert.assertEquals;
 public abstract class AbstractCostBasedPlanTest
         extends BasePlanTest
 {
-    public AbstractCostBasedPlanTest(LocalQueryRunnerSupplier supplier)
-    {
-        super(supplier);
-    }
-
     protected abstract Stream<String> getQueryResourcePaths();
 
     @DataProvider
@@ -81,7 +75,6 @@ public abstract class AbstractCostBasedPlanTest
     }
 
     protected void generate()
-            throws Exception
     {
         initPlanTest();
         try {
@@ -221,7 +214,7 @@ public abstract class AbstractCostBasedPlanTest
         }
 
         @Override
-        public Void visitSemiJoin(final SemiJoinNode node, Integer indent)
+        public Void visitSemiJoin(SemiJoinNode node, Integer indent)
         {
             output(indent, "semijoin (%s):", node.getDistributionType().get());
 
@@ -239,7 +232,7 @@ public abstract class AbstractCostBasedPlanTest
         private void output(int indent, String message, Object... args)
         {
             String formattedMessage = format(message, args);
-            result.append(format("%s%s\n", Strings.repeat("    ", indent), formattedMessage));
+            result.append(format("%s%s\n", "    ".repeat(indent), formattedMessage));
         }
     }
 }

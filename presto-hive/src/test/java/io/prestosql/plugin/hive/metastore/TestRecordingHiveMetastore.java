@@ -131,8 +131,8 @@ public class TestRecordingHiveMetastore
         assertEquals(hiveMetastore.getAllDatabases(), ImmutableList.of("database"));
         assertEquals(hiveMetastore.getTable(HIVE_CONTEXT, "database", "table"), Optional.of(TABLE));
         assertEquals(hiveMetastore.getSupportedColumnStatistics(createVarcharType(123)), ImmutableSet.of(MIN_VALUE, MAX_VALUE));
-        assertEquals(hiveMetastore.getTableStatistics(HIVE_CONTEXT, "database", "table"), PARTITION_STATISTICS);
-        assertEquals(hiveMetastore.getPartitionStatistics(HIVE_CONTEXT, "database", "table", ImmutableSet.of("value")), ImmutableMap.of("value", PARTITION_STATISTICS));
+        assertEquals(hiveMetastore.getTableStatistics(HIVE_CONTEXT, TABLE), PARTITION_STATISTICS);
+        assertEquals(hiveMetastore.getPartitionStatistics(HIVE_CONTEXT, TABLE, ImmutableList.of(PARTITION)), ImmutableMap.of("value", PARTITION_STATISTICS));
         assertEquals(hiveMetastore.getAllTables("database"), ImmutableList.of("table"));
         assertEquals(hiveMetastore.getTablesWithParameter("database", "param", "value3"), ImmutableList.of("table"));
         assertEquals(hiveMetastore.getAllViews("database"), ImmutableList.of());
@@ -143,6 +143,7 @@ public class TestRecordingHiveMetastore
         assertEquals(hiveMetastore.listTablePrivileges("database", "table", "owner", Optional.of(new HivePrincipal(USER, "user"))), ImmutableSet.of(PRIVILEGE_INFO));
         assertEquals(hiveMetastore.listRoles(), ImmutableSet.of("role"));
         assertEquals(hiveMetastore.listRoleGrants(new HivePrincipal(USER, "user")), ImmutableSet.of(ROLE_GRANT));
+        assertEquals(hiveMetastore.listGrantedPrincipals("role"), ImmutableSet.of(ROLE_GRANT));
     }
 
     private static class TestingHiveMetastore
@@ -185,9 +186,9 @@ public class TestRecordingHiveMetastore
         }
 
         @Override
-        public PartitionStatistics getTableStatistics(HiveIdentity identity, String databaseName, String tableName)
+        public PartitionStatistics getTableStatistics(HiveIdentity identity, Table table)
         {
-            if (databaseName.equals("database") && tableName.equals("table")) {
+            if (table.getDatabaseName().equals("database") && table.getTableName().equals("table")) {
                 return PARTITION_STATISTICS;
             }
 
@@ -195,9 +196,11 @@ public class TestRecordingHiveMetastore
         }
 
         @Override
-        public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, String databaseName, String tableName, Set<String> partitionNames)
+        public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, Table table, List<Partition> partitions)
         {
-            if (databaseName.equals("database") && tableName.equals("table") && partitionNames.contains("value")) {
+            boolean partitionMatches = partitions.stream()
+                    .anyMatch(partition -> partition.getValues().get(0).equals("value"));
+            if (table.getDatabaseName().equals("database") && table.getTableName().equals("table") && partitionMatches) {
                 return ImmutableMap.of("value", PARTITION_STATISTICS);
             }
 
@@ -289,6 +292,12 @@ public class TestRecordingHiveMetastore
         public Set<String> listRoles()
         {
             return ImmutableSet.of("role");
+        }
+
+        @Override
+        public Set<RoleGrant> listGrantedPrincipals(String role)
+        {
+            return ImmutableSet.of(ROLE_GRANT);
         }
 
         @Override

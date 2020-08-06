@@ -20,10 +20,11 @@ import io.prestosql.matching.Captures;
 import io.prestosql.matching.Pattern;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.TableHandle;
+import io.prestosql.spi.connector.Assignment;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ProjectionApplicationResult;
 import io.prestosql.spi.expression.ConnectorExpression;
-import io.prestosql.spi.expression.ConnectorExpressionTranslator;
+import io.prestosql.sql.planner.ConnectorExpressionTranslator;
 import io.prestosql.sql.planner.LiteralEncoder;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.TypeAnalyzer;
@@ -44,7 +45,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.prestosql.matching.Capture.newCapture;
-import static io.prestosql.spi.expression.PartialTranslator.extractPartialTranslations;
+import static io.prestosql.sql.planner.PartialTranslator.extractPartialTranslations;
 import static io.prestosql.sql.planner.ReferenceAwareExpressionNodeInliner.replaceExpression;
 import static io.prestosql.sql.planner.plan.Patterns.project;
 import static io.prestosql.sql.planner.plan.Patterns.source;
@@ -106,7 +107,7 @@ public class PushProjectionIntoTableScan
 
         Optional<ProjectionApplicationResult<TableHandle>> result = metadata.applyProjection(context.getSession(), tableScan.getTable(), connectorPartialProjections, assignments);
 
-        if (!result.isPresent()) {
+        if (result.isEmpty()) {
             return Result.empty();
         }
 
@@ -119,7 +120,7 @@ public class PushProjectionIntoTableScan
         List<Symbol> newScanOutputs = new ArrayList<>();
         Map<Symbol, ColumnHandle> newScanAssignments = new HashMap<>();
         Map<String, Symbol> variableMappings = new HashMap<>();
-        for (ProjectionApplicationResult.Assignment assignment : result.get().getAssignments()) {
+        for (Assignment assignment : result.get().getAssignments()) {
             Symbol symbol = context.getSymbolAllocator().newSymbol(assignment.getVariable(), assignment.getType());
 
             newScanOutputs.add(symbol);

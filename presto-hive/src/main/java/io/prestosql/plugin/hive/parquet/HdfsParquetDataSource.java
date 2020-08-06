@@ -136,7 +136,7 @@ public class HdfsParquetDataSource
         }
 
         //
-        // Note: this code does not use the Java 8 stream APIs to avoid any extra object allocation
+        // Note: this code does not use the stream APIs to avoid any extra object allocation
         //
 
         // split disk ranges into "big" and "small"
@@ -241,8 +241,15 @@ public class HdfsParquetDataSource
         DiskRange last = ranges.get(0);
         for (int i = 1; i < ranges.size(); i++) {
             DiskRange current = ranges.get(i);
-            DiskRange merged = last.span(current);
-            if (merged.getLength() <= maxReadSizeBytes && last.getEnd() + maxMergeDistanceBytes >= current.getOffset()) {
+            DiskRange merged = null;
+            boolean blockTooLong = false;
+            try {
+                merged = last.span(current);
+            }
+            catch (ArithmeticException e) {
+                blockTooLong = true;
+            }
+            if (!blockTooLong && merged.getLength() <= maxReadSizeBytes && last.getEnd() + maxMergeDistanceBytes >= current.getOffset()) {
                 last = merged;
             }
             else {

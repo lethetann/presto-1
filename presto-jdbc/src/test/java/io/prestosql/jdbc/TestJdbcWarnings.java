@@ -45,7 +45,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.prestosql.jdbc.TestPrestoDriver.closeQuietly;
 import static io.prestosql.jdbc.TestPrestoDriver.waitForNodeRefresh;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -72,10 +71,12 @@ public class TestJdbcWarnings
     public void setupServer()
             throws Exception
     {
-        server = new TestingPrestoServer(ImmutableMap.<String, String>builder()
-                .put("testing-warning-collector.add-warnings", "true")
-                .put("testing-warning-collector.preloaded-warnings", String.valueOf(PRELOADED_WARNINGS))
-                .build());
+        server = TestingPrestoServer.builder()
+                .setProperties(ImmutableMap.<String, String>builder()
+                        .put("testing-warning-collector.add-warnings", "true")
+                        .put("testing-warning-collector.preloaded-warnings", String.valueOf(PRELOADED_WARNINGS))
+                        .build())
+                .build();
         server.installPlugin(new BlackHolePlugin());
         server.createCatalog("blackhole", "blackhole");
         waitForNodeRefresh(server);
@@ -96,8 +97,9 @@ public class TestJdbcWarnings
 
     @AfterClass(alwaysRun = true)
     public void tearDownServer()
+            throws Exception
     {
-        closeQuietly(server);
+        server.close();
     }
 
     @SuppressWarnings("JDBCResourceOpenedButNotSafelyClosed")
@@ -112,10 +114,11 @@ public class TestJdbcWarnings
 
     @AfterMethod(alwaysRun = true)
     public void teardown()
+            throws Exception
     {
-        closeQuietly(statement);
-        closeQuietly(connection);
         executor.shutdownNow();
+        statement.close();
+        connection.close();
     }
 
     @Test

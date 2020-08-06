@@ -108,7 +108,7 @@ class UnnestBlockBuilder
             outputBlock = new DictionaryBlock(positionCount, source, ids);
         }
 
-        // Flush stored state, so that ids can not be modified after the dictionary has been constructed
+        // Flush stored state, so that ids cannot be modified after the dictionary has been constructed
         clearCurrentOutput();
 
         return outputBlock;
@@ -133,7 +133,7 @@ class UnnestBlockBuilder
     /**
      * Append range of elements starting at {@code startPosition} and length {@code length}
      * from the source block to output block.
-     *
+     * <p>
      * Purpose of this method is to avoid repeated range checks for every invocation of {@link #appendElement}.
      */
     public void appendRange(int startPosition, int length)
@@ -196,7 +196,7 @@ class UnnestBlockBuilder
 
     /**
      * This method appends {@code sourcePosition} to ids array.
-     *
+     * <p>
      * The caller of this method has to ensure the following:
      * - {@code sourcePosition} is a valid index in the source
      * - {@code usingCopiedBlock} is false

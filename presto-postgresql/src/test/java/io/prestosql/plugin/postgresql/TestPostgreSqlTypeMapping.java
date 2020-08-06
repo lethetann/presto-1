@@ -20,6 +20,8 @@ import io.airlift.json.JsonCodec;
 import io.prestosql.Session;
 import io.prestosql.plugin.jdbc.UnsupportedTypeHandling;
 import io.prestosql.spi.type.ArrayType;
+import io.prestosql.spi.type.DoubleType;
+import io.prestosql.spi.type.RealType;
 import io.prestosql.spi.type.TimeZoneKey;
 import io.prestosql.testing.AbstractTestQueryFramework;
 import io.prestosql.testing.QueryRunner;
@@ -39,14 +41,18 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.text.NumberFormat;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Stream;
@@ -57,8 +63,14 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.io.BaseEncoding.base16;
 import static io.airlift.json.JsonCodec.listJsonCodec;
 import static io.airlift.json.JsonCodec.mapJsonCodec;
-import static io.prestosql.plugin.jdbc.BaseJdbcPropertiesProvider.UNSUPPORTED_TYPE_HANDLING;
+import static io.prestosql.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
+import static io.prestosql.plugin.jdbc.DecimalConfig.DecimalMapping.STRICT;
+import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_DEFAULT_SCALE;
+import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_MAPPING;
+import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_ROUNDING_MODE;
+import static io.prestosql.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.prestosql.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
+import static io.prestosql.plugin.jdbc.UnsupportedTypeHandling.IGNORE;
 import static io.prestosql.plugin.postgresql.PostgreSqlConfig.ArrayMapping.AS_ARRAY;
 import static io.prestosql.plugin.postgresql.PostgreSqlConfig.ArrayMapping.AS_JSON;
 import static io.prestosql.plugin.postgresql.PostgreSqlQueryRunner.createPostgreSqlQueryRunner;
@@ -79,12 +91,15 @@ import static io.prestosql.testing.datatype.DataType.integerDataType;
 import static io.prestosql.testing.datatype.DataType.jsonDataType;
 import static io.prestosql.testing.datatype.DataType.realDataType;
 import static io.prestosql.testing.datatype.DataType.smallintDataType;
+import static io.prestosql.testing.datatype.DataType.timeDataType;
 import static io.prestosql.testing.datatype.DataType.timestampDataType;
 import static io.prestosql.testing.datatype.DataType.varbinaryDataType;
 import static io.prestosql.testing.datatype.DataType.varcharDataType;
 import static io.prestosql.type.JsonType.JSON;
 import static io.prestosql.type.UuidType.UUID;
 import static java.lang.String.format;
+import static java.math.RoundingMode.HALF_UP;
+import static java.math.RoundingMode.UNNECESSARY;
 import static java.nio.charset.StandardCharsets.UTF_16LE;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.ZoneOffset.UTC;
@@ -98,27 +113,31 @@ import static java.util.stream.Collectors.toList;
 public class TestPostgreSqlTypeMapping
         extends AbstractTestQueryFramework
 {
+    private static final LocalDate EPOCH_DAY = LocalDate.ofEpochDay(0);
     private static final JsonCodec<List<Map<String, String>>> HSTORE_CODEC = listJsonCodec(mapJsonCodec(String.class, String.class));
 
     private TestingPostgreSqlServer postgreSqlServer;
 
-    private LocalDateTime beforeEpoch;
-    private LocalDateTime epoch;
-    private LocalDateTime afterEpoch;
+    private final LocalDateTime beforeEpoch = LocalDateTime.of(1958, 1, 1, 13, 18, 3, 123_000_000);
+    private final LocalDateTime epoch = LocalDateTime.of(1970, 1, 1, 0, 0, 0);
+    private final LocalDateTime afterEpoch = LocalDateTime.of(2019, 3, 18, 10, 1, 17, 987_000_000);
 
-    private ZoneId jvmZone;
-    private LocalDateTime timeGapInJvmZone1;
-    private LocalDateTime timeGapInJvmZone2;
-    private LocalDateTime timeDoubledInJvmZone;
+    private final ZoneId jvmZone = ZoneId.systemDefault();
+    private final LocalDateTime timeGapInJvmZone1 = LocalDateTime.of(1970, 1, 1, 0, 13, 42);
+    private final LocalDateTime timeGapInJvmZone2 = LocalDateTime.of(2018, 4, 1, 2, 13, 55, 123_000_000);
+    private final LocalDateTime timeDoubledInJvmZone = LocalDateTime.of(2018, 10, 28, 1, 33, 17, 456_000_000);
 
     // no DST in 1970, but has DST in later years (e.g. 2018)
-    private ZoneId vilnius;
-    private LocalDateTime timeGapInVilnius;
-    private LocalDateTime timeDoubledInVilnius;
+    private final ZoneId vilnius = ZoneId.of("Europe/Vilnius");
+    private final LocalDateTime timeGapInVilnius = LocalDateTime.of(2018, 3, 25, 3, 17, 17);
+    private final LocalDateTime timeDoubledInVilnius = LocalDateTime.of(2018, 10, 28, 3, 33, 33, 333_000_000);
 
     // minutes offset change since 1970-01-01, no DST
-    private ZoneId kathmandu;
-    private LocalDateTime timeGapInKathmandu;
+    private final ZoneId kathmandu = ZoneId.of("Asia/Kathmandu");
+    private final LocalDateTime timeGapInKathmandu = LocalDateTime.of(1986, 1, 1, 0, 13, 7);
+
+    private final ZoneOffset fixedOffsetEast = ZoneOffset.ofHoursMinutes(2, 17);
+    private final ZoneOffset fixedOffsetWest = ZoneOffset.ofHoursMinutes(-7, -31);
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -127,6 +146,7 @@ public class TestPostgreSqlTypeMapping
         this.postgreSqlServer = new TestingPostgreSqlServer();
         return createPostgreSqlQueryRunner(
                 postgreSqlServer,
+                ImmutableMap.of(),
                 ImmutableMap.of("jdbc-types-mapped-to-varchar", "Tsrange, Inet" /* make sure that types are compared case insensitively */),
                 ImmutableList.of());
     }
@@ -140,29 +160,13 @@ public class TestPostgreSqlTypeMapping
     @BeforeClass
     public void setUp()
     {
-        beforeEpoch = LocalDateTime.of(1958, 1, 1, 13, 18, 3, 123_000_000);
-        epoch = LocalDateTime.of(1970, 1, 1, 0, 0, 0);
-        afterEpoch = LocalDateTime.of(2019, 03, 18, 10, 01, 17, 987_000_000);
-
-        jvmZone = ZoneId.systemDefault();
-
-        timeGapInJvmZone1 = LocalDateTime.of(1970, 1, 1, 0, 13, 42);
         checkIsGap(jvmZone, timeGapInJvmZone1);
-        timeGapInJvmZone2 = LocalDateTime.of(2018, 4, 1, 2, 13, 55, 123_000_000);
         checkIsGap(jvmZone, timeGapInJvmZone2);
-        timeDoubledInJvmZone = LocalDateTime.of(2018, 10, 28, 1, 33, 17, 456_000_000);
         checkIsDoubled(jvmZone, timeDoubledInJvmZone);
 
-        vilnius = ZoneId.of("Europe/Vilnius");
-
-        timeGapInVilnius = LocalDateTime.of(2018, 3, 25, 3, 17, 17);
         checkIsGap(vilnius, timeGapInVilnius);
-        timeDoubledInVilnius = LocalDateTime.of(2018, 10, 28, 3, 33, 33, 333_000_000);
         checkIsDoubled(vilnius, timeDoubledInVilnius);
 
-        kathmandu = ZoneId.of("Asia/Kathmandu");
-
-        timeGapInKathmandu = LocalDateTime.of(1986, 1, 1, 0, 13, 7);
         checkIsGap(kathmandu, timeGapInKathmandu);
 
         JdbcSqlExecutor executor = new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl());
@@ -172,7 +176,7 @@ public class TestPostgreSqlTypeMapping
     @Test
     public void testBasicTypes()
     {
-        DataTypeTest.create()
+        DataTypeTest.create(true)
                 .addRoundTrip(booleanDataType(), true)
                 .addRoundTrip(booleanDataType(), false)
                 .addRoundTrip(bigintDataType(), 123_456_789_012L)
@@ -362,10 +366,251 @@ public class TestPostgreSqlTypeMapping
     }
 
     @Test
+    public void testDecimalExceedingPrecisionMaxWithExceedingIntegerValues()
+    {
+        JdbcSqlExecutor jdbcSqlExecutor = new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl());
+
+        try (TestTable testTable = new TestTable(
+                jdbcSqlExecutor,
+                "tpch.test_exceeding_max_decimal",
+                "(d_col decimal(65,25))",
+                asList("1234567890123456789012345678901234567890.123456789", "-1234567890123456789012345678901234567890.123456789"))) {
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,0)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Decimal overflow");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(CONVERT_TO_VARCHAR),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'varchar')");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(CONVERT_TO_VARCHAR),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES ('1234567890123456789012345678901234567890.1234567890000000000000000'), ('-1234567890123456789012345678901234567890.1234567890000000000000000')");
+        }
+    }
+
+    @Test
+    public void testDecimalExceedingPrecisionMaxWithNonExceedingIntegerValues()
+    {
+        JdbcSqlExecutor jdbcSqlExecutor = new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl());
+
+        try (TestTable testTable = new TestTable(
+                jdbcSqlExecutor,
+                "tpch.test_exceeding_max_decimal",
+                "(d_col decimal(60,20))",
+                asList("123456789012345678901234567890.123456789012345", "-123456789012345678901234567890.123456789012345"))) {
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,0)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (123456789012345678901234567890), (-123456789012345678901234567890)");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 8),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,8)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 8),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 8),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (123456789012345678901234567890.12345679), (-123456789012345678901234567890.12345679)");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 22),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,20)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 20),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Decimal overflow");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 9),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Decimal overflow");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(CONVERT_TO_VARCHAR),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'varchar')");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(CONVERT_TO_VARCHAR),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES ('123456789012345678901234567890.12345678901234500000'), ('-123456789012345678901234567890.12345678901234500000')");
+        }
+    }
+
+    @Test(dataProvider = "testDecimalExceedingPrecisionMaxProvider")
+    public void testDecimalExceedingPrecisionMaxWithSupportedValues(int typePrecision, int typeScale)
+    {
+        JdbcSqlExecutor jdbcSqlExecutor = new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl());
+
+        try (TestTable testTable = new TestTable(
+                jdbcSqlExecutor,
+                "tpch.test_exceeding_max_decimal",
+                format("(d_col decimal(%d,%d))", typePrecision, typeScale),
+                asList("12.01", "-12.01", "123", "-123", "1.12345678", "-1.12345678"))) {
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,0)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (12), (-12), (123), (-123), (1), (-1)");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 3),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,3)')");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 3),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (12.01), (-12.01), (123), (-123), (1.123), (-1.123)");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 3),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 8),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col', 'decimal(38,8)')");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 8),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (12.01), (-12.01), (123), (-123), (1.12345678), (-1.12345678)");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 9),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (12.01), (-12.01), (123), (-123), (1.12345678), (-1.12345678)");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 8),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (12.01), (-12.01), (123), (-123), (1.12345678), (-1.12345678)");
+        }
+    }
+
+    @DataProvider
+    public Object[][] testDecimalExceedingPrecisionMaxProvider()
+    {
+        return new Object[][] {
+                {40, 8},
+                {50, 10},
+        };
+    }
+
+    @Test
+    public void testDecimalUnspecifiedPrecisionWithSupportedValues()
+    {
+        JdbcSqlExecutor jdbcSqlExecutor = new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl());
+
+        try (TestTable testTable = new TestTable(
+                jdbcSqlExecutor,
+                "tpch.test_var_decimal",
+                "(d_col decimal)",
+                asList("1.12", "123456.789", "-1.12", "-123456.789"))) {
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col','decimal(38,0)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 0),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (1), (123457), (-1), (-123457)");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 1),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 1),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col','decimal(38,1)')");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 1),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (1.1), (123456.8), (-1.1), (-123456.8)");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 2),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 2),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (1.12), (123456.79), (-1.12), (-123456.79)");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 3),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('d_col','decimal(38,3)')");
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 3),
+                    "SELECT d_col FROM " + testTable.getName(),
+                    "VALUES (1.12), (123456.789), (-1.12), (-123456.789)");
+        }
+    }
+
+    @Test
+    public void testDecimalUnspecifiedPrecisionWithExceedingValue()
+    {
+        JdbcSqlExecutor jdbcSqlExecutor = new JdbcSqlExecutor(postgreSqlServer.getJdbcUrl());
+        try (TestTable testTable = new TestTable(
+                jdbcSqlExecutor,
+                "tpch.test_var_decimal_with_exceeding_value",
+                "(key varchar(5), d_col decimal)",
+                asList("NULL, '1.12'", "NULL, '1234567890123456789012345678901234567890.1234567'"))) {
+            assertQuery(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('key', 'varchar(5)'),('d_col', 'decimal(38,0)')");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(UNNECESSARY, 0),
+                    "SELECT * FROM " + testTable.getName(),
+                    "Rounding necessary");
+            assertQueryFails(
+                    sessionWithDecimalMappingAllowOverflow(HALF_UP, 0),
+                    "SELECT * FROM " + testTable.getName(),
+                    "Decimal overflow");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(CONVERT_TO_VARCHAR),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('key', 'varchar(5)'),('d_col', 'varchar')");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(CONVERT_TO_VARCHAR),
+                    "SELECT * FROM " + testTable.getName(),
+                    "VALUES (NULL, '1.12'), (NULL, '1234567890123456789012345678901234567890.1234567')");
+            assertQuery(
+                    sessionWithDecimalMappingStrict(IGNORE),
+                    format("SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'tpch' AND table_schema||'.'||table_name = '%s'", testTable.getName()),
+                    "VALUES ('key', 'varchar(5)')");
+        }
+    }
+
+    @Test
     public void testArray()
     {
         // basic types
-        DataTypeTest.create()
+        DataTypeTest.create(true)
                 .addRoundTrip(arrayDataType(booleanDataType()), asList(true, false))
                 .addRoundTrip(arrayDataType(bigintDataType()), asList(123_456_789_012L))
                 .addRoundTrip(arrayDataType(integerDataType()), asList(1, 2, 1_234_567_890))
@@ -608,6 +853,7 @@ public class TestPostgreSqlTypeMapping
                 insertType,
                 new ArrayType(elementType.getPrestoResultType()),
                 valuesList -> "ARRAY" + valuesList.stream().map(elementType::toLiteral).collect(toList()),
+                valuesList -> "ARRAY" + valuesList.stream().map(elementType::toPrestoLiteral).collect(toList()),
                 valuesList -> valuesList == null ? null : valuesList.stream().map(elementType::toPrestoQueryResult).collect(toList()));
     }
 
@@ -651,7 +897,7 @@ public class TestPostgreSqlTypeMapping
         LocalDate dateOfLocalTimeChangeBackwardAtMidnightInSomeZone = LocalDate.of(1983, 10, 1);
         checkIsDoubled(someZone, dateOfLocalTimeChangeBackwardAtMidnightInSomeZone.atStartOfDay().minusMinutes(1));
 
-        DataTypeTest testCases = DataTypeTest.create()
+        DataTypeTest testCases = DataTypeTest.create(true)
                 .addRoundTrip(dateDataType(), LocalDate.of(1952, 4, 3)) // before epoch
                 .addRoundTrip(dateDataType(), LocalDate.of(1970, 1, 1))
                 .addRoundTrip(dateDataType(), LocalDate.of(1970, 2, 3))
@@ -691,68 +937,76 @@ public class TestPostgreSqlTypeMapping
     }
 
     @Test(dataProvider = "testTimestampDataProvider")
-    public void testTimestamp(boolean legacyTimestamp, boolean insertWithPresto)
+    public void testTime(boolean legacyTimestamp, boolean insertWithPresto, ZoneId sessionZone)
     {
-        // using two non-JVM zones so that we don't need to worry what Postgres system zone is
-        for (ZoneId sessionZone : ImmutableList.of(ZoneOffset.UTC, jvmZone, vilnius, kathmandu, ZoneId.of(TestingSession.DEFAULT_TIME_ZONE_KEY.getId()))) {
-            DataTypeTest tests = DataTypeTest.create()
-                    .addRoundTrip(timestampDataType(), beforeEpoch)
-                    .addRoundTrip(timestampDataType(), afterEpoch)
-                    .addRoundTrip(timestampDataType(), timeDoubledInJvmZone)
-                    .addRoundTrip(timestampDataType(), timeDoubledInVilnius);
+        LocalTime timeGapInJvmZone = LocalTime.of(0, 12, 34, 567_000_000);
+        checkIsGap(jvmZone, timeGapInJvmZone.atDate(EPOCH_DAY));
 
-            addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, epoch); // epoch also is a gap in JVM zone
-            addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInJvmZone1);
-            addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInJvmZone2);
-            addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInVilnius);
-            addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInKathmandu);
+        DataTypeTest tests = DataTypeTest.create()
+                .addRoundTrip(timeDataType(), LocalTime.of(1, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(2, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(2, 12, 34, 1_000_000))
+                .addRoundTrip(timeDataType(), LocalTime.of(3, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(4, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(5, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(6, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(9, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(10, 12, 34, 0))
+                .addRoundTrip(timeDataType(), LocalTime.of(15, 12, 34, 567_000_000))
+                .addRoundTrip(timeDataType(), LocalTime.of(23, 59, 59, 999_000_000));
 
-            Session session = Session.builder(getQueryRunner().getDefaultSession())
-                    .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
-                    .setSystemProperty("legacy_timestamp", Boolean.toString(legacyTimestamp))
-                    .build();
+        addTimeTestIfSupported(tests, legacyTimestamp, sessionZone, epoch.toLocalTime()); // epoch is also a gap in JVM zone
+        addTimeTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInJvmZone);
 
-            if (insertWithPresto) {
-                tests.execute(getQueryRunner(), session, prestoCreateAsSelect(session, "test_timestamp"));
-            }
-            else {
-                tests.execute(getQueryRunner(), session, postgresCreateAndInsert("tpch.test_timestamp"));
-            }
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
+                .setSystemProperty("legacy_timestamp", Boolean.toString(legacyTimestamp))
+                .build();
+
+        if (insertWithPresto) {
+            tests.execute(getQueryRunner(), session, prestoCreateAsSelect(session, "test_time"));
+        }
+        else {
+            tests.execute(getQueryRunner(), session, postgresCreateAndInsert("tpch.test_time"));
         }
     }
 
-    @Test(dataProvider = "testTimestampDataProvider")
-    public void testArrayTimestamp(boolean legacyTimestamp, boolean insertWithPresto)
+    private void addTimeTestIfSupported(DataTypeTest tests, boolean legacyTimestamp, ZoneId sessionZone, LocalTime time)
     {
-        DataType<List<LocalDateTime>> dataType;
-        DataSetup dataSetup;
+        if (legacyTimestamp && isGap(sessionZone, time.atDate(EPOCH_DAY))) {
+            // in legacy timestamp semantics we cannot represent this time
+            return;
+        }
+
+        tests.addRoundTrip(timeDataType(), time);
+    }
+
+    @Test(dataProvider = "testTimestampDataProvider")
+    public void testTimestamp(boolean legacyTimestamp, boolean insertWithPresto, ZoneId sessionZone)
+    {
+        // using two non-JVM zones so that we don't need to worry what Postgres system zone is
+        DataTypeTest tests = DataTypeTest.create(true)
+                .addRoundTrip(timestampDataType(), beforeEpoch)
+                .addRoundTrip(timestampDataType(), afterEpoch)
+                .addRoundTrip(timestampDataType(), timeDoubledInJvmZone)
+                .addRoundTrip(timestampDataType(), timeDoubledInVilnius);
+
+        addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, epoch); // epoch also is a gap in JVM zone
+        addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInJvmZone1);
+        addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInJvmZone2);
+        addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInVilnius);
+        addTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, timeGapInKathmandu);
+
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
+                .setSystemProperty("legacy_timestamp", Boolean.toString(legacyTimestamp))
+                .build();
+
         if (insertWithPresto) {
-            dataType = arrayDataType(timestampDataType());
-            dataSetup = prestoCreateAsSelect(sessionWithArrayAsArray(), "test_array_timestamp");
+            tests.execute(getQueryRunner(), session, prestoCreateAsSelect(session, "test_timestamp"));
         }
         else {
-            dataType = arrayDataType(timestampDataType(), "timestamp[]");
-            dataSetup = postgresCreateAndInsert("tpch.test_array_timestamp");
-        }
-        for (ZoneId sessionZone : ImmutableList.of(ZoneOffset.UTC, jvmZone, vilnius, kathmandu, ZoneId.of(TestingSession.DEFAULT_TIME_ZONE_KEY.getId()))) {
-            DataTypeTest tests = DataTypeTest.create()
-                    .addRoundTrip(dataType, asList(beforeEpoch))
-                    .addRoundTrip(dataType, asList(afterEpoch))
-                    .addRoundTrip(dataType, asList(timeDoubledInJvmZone))
-                    .addRoundTrip(dataType, asList(timeDoubledInVilnius));
-
-            addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, epoch);
-            addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInJvmZone1);
-            addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInJvmZone2);
-            addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInVilnius);
-            addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInKathmandu);
-
-            Session session = Session.builder(sessionWithArrayAsArray())
-                    .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
-                    .setSystemProperty("legacy_timestamp", Boolean.toString(legacyTimestamp))
-                    .build();
-
-            tests.execute(getQueryRunner(), session, dataSetup);
+            tests.execute(getQueryRunner(), session, postgresCreateAndInsert("tpch.test_timestamp"));
         }
     }
 
@@ -766,6 +1020,39 @@ public class TestPostgreSqlTypeMapping
         tests.addRoundTrip(timestampDataType(), dateTime);
     }
 
+    @Test(dataProvider = "testTimestampDataProvider")
+    public void testArrayTimestamp(boolean legacyTimestamp, boolean insertWithPresto, ZoneId sessionZone)
+    {
+        DataType<List<LocalDateTime>> dataType;
+        DataSetup dataSetup;
+        if (insertWithPresto) {
+            dataType = arrayDataType(timestampDataType());
+            dataSetup = prestoCreateAsSelect(sessionWithArrayAsArray(), "test_array_timestamp");
+        }
+        else {
+            dataType = arrayDataType(timestampDataType(), "timestamp[]");
+            dataSetup = postgresCreateAndInsert("tpch.test_array_timestamp");
+        }
+        DataTypeTest tests = DataTypeTest.create(true)
+                .addRoundTrip(dataType, asList(beforeEpoch))
+                .addRoundTrip(dataType, asList(afterEpoch))
+                .addRoundTrip(dataType, asList(timeDoubledInJvmZone))
+                .addRoundTrip(dataType, asList(timeDoubledInVilnius));
+
+        addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, epoch);
+        addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInJvmZone1);
+        addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInJvmZone2);
+        addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInVilnius);
+        addArrayTimestampTestIfSupported(tests, legacyTimestamp, sessionZone, dataType, timeGapInKathmandu);
+
+        Session session = Session.builder(sessionWithArrayAsArray())
+                .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
+                .setSystemProperty("legacy_timestamp", Boolean.toString(legacyTimestamp))
+                .build();
+
+        tests.execute(getQueryRunner(), session, dataSetup);
+    }
+
     private void addArrayTimestampTestIfSupported(DataTypeTest tests, boolean legacyTimestamp, ZoneId sessionZone, DataType<List<LocalDateTime>> dataType, LocalDateTime dateTime)
     {
         if (legacyTimestamp && isGap(sessionZone, dateTime)) {
@@ -774,6 +1061,85 @@ public class TestPostgreSqlTypeMapping
         }
 
         tests.addRoundTrip(dataType, asList(dateTime));
+    }
+
+    @DataProvider
+    public Object[][] testTimestampDataProvider()
+    {
+        return new Object[][] {
+                {true, true, ZoneOffset.UTC},
+                {false, true, ZoneOffset.UTC},
+                {true, false, ZoneOffset.UTC},
+                {false, false, ZoneOffset.UTC},
+
+                {true, true, jvmZone},
+                {false, true, jvmZone},
+                {true, false, jvmZone},
+                {false, false, jvmZone},
+
+                // using two non-JVM zones so that we don't need to worry what Postgres system zone is
+                {true, true, vilnius},
+                {false, true, vilnius},
+                {true, false, vilnius},
+                {false, false, vilnius},
+
+                {true, true, kathmandu},
+                {false, true, kathmandu},
+                {true, false, kathmandu},
+                {false, false, kathmandu},
+
+                {true, true, ZoneId.of(TestingSession.DEFAULT_TIME_ZONE_KEY.getId())},
+                {false, true, ZoneId.of(TestingSession.DEFAULT_TIME_ZONE_KEY.getId())},
+                {true, false, ZoneId.of(TestingSession.DEFAULT_TIME_ZONE_KEY.getId())},
+                {false, false, ZoneId.of(TestingSession.DEFAULT_TIME_ZONE_KEY.getId())},
+        };
+    }
+
+    @Test(dataProvider = "testTimestampWithTimeZoneDataProvider")
+    public void testTimestampWithTimeZone(boolean insertWithPresto)
+    {
+        DataType<ZonedDateTime> dataType;
+        DataSetup dataSetup;
+        if (insertWithPresto) {
+            dataType = prestoTimestampWithTimeZoneDataType();
+            dataSetup = prestoCreateAsSelect("test_timestamp_with_time_zone");
+        }
+        else {
+            dataType = postgreSqlTimestampWithTimeZoneDataType();
+            dataSetup = postgresCreateAndInsert("tpch.test_timestamp_with_time_zone");
+        }
+
+        DataTypeTest tests = DataTypeTest.create(true)
+                .addRoundTrip(dataType, epoch.atZone(UTC))
+                .addRoundTrip(dataType, epoch.atZone(kathmandu))
+                .addRoundTrip(dataType, epoch.atZone(fixedOffsetEast))
+                .addRoundTrip(dataType, epoch.atZone(fixedOffsetWest))
+                .addRoundTrip(dataType, beforeEpoch.atZone(UTC))
+                .addRoundTrip(dataType, beforeEpoch.atZone(kathmandu))
+                .addRoundTrip(dataType, beforeEpoch.atZone(fixedOffsetEast))
+                .addRoundTrip(dataType, beforeEpoch.atZone(fixedOffsetWest))
+                .addRoundTrip(dataType, afterEpoch.atZone(UTC))
+                .addRoundTrip(dataType, afterEpoch.atZone(kathmandu))
+                .addRoundTrip(dataType, afterEpoch.atZone(fixedOffsetEast))
+                .addRoundTrip(dataType, afterEpoch.atZone(fixedOffsetWest))
+                .addRoundTrip(dataType, afterEpoch.atZone(ZoneId.of("GMT")))
+                .addRoundTrip(dataType, afterEpoch.atZone(ZoneId.of("UTC")))
+                .addRoundTrip(dataType, afterEpoch.atZone(ZoneId.of("Z")))
+                .addRoundTrip(dataType, afterEpoch.atZone(ZoneId.of("UTC+00:00")))
+                .addRoundTrip(dataType, timeDoubledInJvmZone.atZone(UTC))
+                .addRoundTrip(dataType, timeDoubledInJvmZone.atZone(jvmZone))
+                .addRoundTrip(dataType, timeDoubledInJvmZone.atZone(kathmandu))
+                .addRoundTrip(dataType, timeDoubledInVilnius.atZone(UTC))
+                .addRoundTrip(dataType, timeDoubledInVilnius.atZone(vilnius))
+                .addRoundTrip(dataType, timeDoubledInVilnius.atZone(kathmandu))
+                .addRoundTrip(dataType, timeGapInJvmZone1.atZone(UTC))
+                .addRoundTrip(dataType, timeGapInJvmZone1.atZone(kathmandu))
+                .addRoundTrip(dataType, timeGapInJvmZone2.atZone(UTC))
+                .addRoundTrip(dataType, timeGapInJvmZone2.atZone(kathmandu))
+                .addRoundTrip(dataType, timeGapInVilnius.atZone(kathmandu))
+                .addRoundTrip(dataType, timeGapInKathmandu.atZone(vilnius));
+
+        tests.execute(getQueryRunner(), dataSetup);
     }
 
     @Test(dataProvider = "testTimestampWithTimeZoneDataProvider")
@@ -811,54 +1177,6 @@ public class TestPostgreSqlTypeMapping
     }
 
     @DataProvider
-    public Object[][] testTimestampDataProvider()
-    {
-        return new Object[][] {
-                {true, true},
-                {false, true},
-                {true, false},
-                {false, false},
-        };
-    }
-
-    @Test(dataProvider = "testTimestampWithTimeZoneDataProvider")
-    public void testTimestampWithTimeZone(boolean insertWithPresto)
-    {
-        DataType<ZonedDateTime> dataType;
-        DataSetup dataSetup;
-        if (insertWithPresto) {
-            dataType = prestoTimestampWithTimeZoneDataType();
-            dataSetup = prestoCreateAsSelect("test_timestamp_with_time_zone");
-        }
-        else {
-            dataType = postgreSqlTimestampWithTimeZoneDataType();
-            dataSetup = postgresCreateAndInsert("tpch.test_timestamp_with_time_zone");
-        }
-
-        DataTypeTest tests = DataTypeTest.create()
-                .addRoundTrip(dataType, epoch.atZone(UTC))
-                .addRoundTrip(dataType, epoch.atZone(kathmandu))
-                .addRoundTrip(dataType, beforeEpoch.atZone(UTC))
-                .addRoundTrip(dataType, beforeEpoch.atZone(kathmandu))
-                .addRoundTrip(dataType, afterEpoch.atZone(UTC))
-                .addRoundTrip(dataType, afterEpoch.atZone(kathmandu))
-                .addRoundTrip(dataType, timeDoubledInJvmZone.atZone(UTC))
-                .addRoundTrip(dataType, timeDoubledInJvmZone.atZone(jvmZone))
-                .addRoundTrip(dataType, timeDoubledInJvmZone.atZone(kathmandu))
-                .addRoundTrip(dataType, timeDoubledInVilnius.atZone(UTC))
-                .addRoundTrip(dataType, timeDoubledInVilnius.atZone(vilnius))
-                .addRoundTrip(dataType, timeDoubledInVilnius.atZone(kathmandu))
-                .addRoundTrip(dataType, timeGapInJvmZone1.atZone(UTC))
-                .addRoundTrip(dataType, timeGapInJvmZone1.atZone(kathmandu))
-                .addRoundTrip(dataType, timeGapInJvmZone2.atZone(UTC))
-                .addRoundTrip(dataType, timeGapInJvmZone2.atZone(kathmandu))
-                .addRoundTrip(dataType, timeGapInVilnius.atZone(kathmandu))
-                .addRoundTrip(dataType, timeGapInKathmandu.atZone(vilnius));
-
-        tests.execute(getQueryRunner(), dataSetup);
-    }
-
-    @DataProvider
     public Object[][] testTimestampWithTimeZoneDataProvider()
     {
         return new Object[][] {
@@ -885,7 +1203,7 @@ public class TestPostgreSqlTypeMapping
 
     private DataTypeTest jsonTestCases(DataType<String> jsonDataType)
     {
-        return DataTypeTest.create()
+        return DataTypeTest.create(true)
                 .addRoundTrip(jsonDataType, "{}")
                 .addRoundTrip(jsonDataType, null)
                 .addRoundTrip(jsonDataType, "null")
@@ -928,9 +1246,61 @@ public class TestPostgreSqlTypeMapping
 
     private DataTypeTest uuidTestCases(DataType<java.util.UUID> uuidDataType)
     {
-        return DataTypeTest.create()
+        return DataTypeTest.create(true)
                 .addRoundTrip(uuidDataType, java.util.UUID.fromString("00000000-0000-0000-0000-000000000000"))
                 .addRoundTrip(uuidDataType, java.util.UUID.fromString("123e4567-e89b-12d3-a456-426655440000"));
+    }
+
+    @Test
+    public void testMoney()
+    {
+        DataTypeTest.create(true)
+                .addRoundTrip(moneyDataType(), null)
+                .addRoundTrip(moneyDataType(), 10.)
+                .addRoundTrip(moneyDataType(), 10.54)
+                .addRoundTrip(moneyDataType(), 10_000_000.42)
+                .execute(getQueryRunner(), postgresCreateAndInsert("tpch.presto_test_money"));
+    }
+
+    @Test
+    public void testReal()
+    {
+        singlePrecisionFloatingPointTests(realDataType())
+                .execute(getQueryRunner(), prestoCreateAsSelect("presto_test_real"));
+
+        singlePrecisionFloatingPointTests(postgreSqlRealDataType())
+                .execute(getQueryRunner(), postgresCreateAndInsert("tpch.postgresql_test_real"));
+    }
+
+    @Test
+    public void testDouble()
+    {
+        doublePrecisionFloatinPointTests(doubleDataType())
+                .execute(getQueryRunner(), prestoCreateAsSelect("presto_test_double"));
+
+        doublePrecisionFloatinPointTests(postgreSqlDoubleDataType())
+                .execute(getQueryRunner(), postgresCreateAndInsert("tpch.postgresql_test_double"));
+    }
+
+    private static DataTypeTest singlePrecisionFloatingPointTests(DataType<Float> floatType)
+    {
+        return DataTypeTest.create(true)
+                .addRoundTrip(floatType, 3.14f)
+                .addRoundTrip(floatType, 3.1415927f)
+                .addRoundTrip(floatType, Float.NaN)
+                .addRoundTrip(floatType, Float.NEGATIVE_INFINITY)
+                .addRoundTrip(floatType, Float.POSITIVE_INFINITY)
+                .addRoundTrip(floatType, null);
+    }
+
+    private static DataTypeTest doublePrecisionFloatinPointTests(DataType<Double> doubleType)
+    {
+        return DataTypeTest.create(true)
+                .addRoundTrip(doubleType, 1.0e100d)
+                .addRoundTrip(doubleType, Double.NaN)
+                .addRoundTrip(doubleType, Double.POSITIVE_INFINITY)
+                .addRoundTrip(doubleType, Double.NEGATIVE_INFINITY)
+                .addRoundTrip(doubleType, null);
     }
 
     private void testUnsupportedDataTypeAsIgnored(String dataTypeName, String databaseValue)
@@ -1022,6 +1392,7 @@ public class TestPostgreSqlTypeMapping
                 // PostgreSQL never examines the content of a literal string before determining its type, so `TIMESTAMP '.... {zone}'` won't work.
                 // PostgreSQL does not store zone, only the point in time
                 zonedDateTime -> DateTimeFormatter.ofPattern("'TIMESTAMP WITH TIME ZONE '''yyyy-MM-dd HH:mm:ss.SSS VV''").format(zonedDateTime.withZoneSameInstant(UTC)),
+                DateTimeFormatter.ofPattern("'TIMESTAMP '''yyyy-MM-dd HH:mm:ss.SSS VV''")::format,
                 zonedDateTime -> zonedDateTime.withZoneSameInstant(ZoneId.of("UTC")));
     }
 
@@ -1092,7 +1463,24 @@ public class TestPostgreSqlTypeMapping
                 "bytea",
                 VARBINARY,
                 bytes -> format("bytea E'\\\\x%s'", base16().encode(bytes)),
+                DataType::binaryLiteral,
                 identity());
+    }
+
+    private static DataType<Double> moneyDataType()
+    {
+        return dataType(
+                "money",
+                VARCHAR,
+                String::valueOf,
+                amount -> {
+                    NumberFormat numberFormat = NumberFormat.getCurrencyInstance(Locale.US);
+                    return "'" + numberFormat.format(amount) + "'";
+                },
+                amount -> {
+                    NumberFormat numberFormat = NumberFormat.getCurrencyInstance(Locale.US);
+                    return numberFormat.format(amount);
+                });
     }
 
     private Session sessionWithArrayAsArray()
@@ -1102,9 +1490,26 @@ public class TestPostgreSqlTypeMapping
                 .build();
     }
 
+    private Session sessionWithDecimalMappingAllowOverflow(RoundingMode roundingMode, int scale)
+    {
+        return Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty("postgresql", DECIMAL_MAPPING, ALLOW_OVERFLOW.name())
+                .setCatalogSessionProperty("postgresql", DECIMAL_ROUNDING_MODE, roundingMode.name())
+                .setCatalogSessionProperty("postgresql", DECIMAL_DEFAULT_SCALE, Integer.valueOf(scale).toString())
+                .build();
+    }
+
+    private Session sessionWithDecimalMappingStrict(UnsupportedTypeHandling unsupportedTypeHandling)
+    {
+        return Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty("postgresql", DECIMAL_MAPPING, STRICT.name())
+                .setCatalogSessionProperty("postgresql", UNSUPPORTED_TYPE_HANDLING, unsupportedTypeHandling.name())
+                .build();
+    }
+
     private DataSetup prestoCreateAsSelect(String tableNamePrefix)
     {
-        return new CreateAsSelectDataSetup(new PrestoSqlExecutor(getQueryRunner()), tableNamePrefix);
+        return prestoCreateAsSelect(getSession(), tableNamePrefix);
     }
 
     private DataSetup prestoCreateAsSelect(Session session, String tableNamePrefix)
@@ -1135,5 +1540,37 @@ public class TestPostgreSqlTypeMapping
     private static void checkIsDoubled(ZoneId zone, LocalDateTime dateTime)
     {
         verify(zone.getRules().getValidOffsets(dateTime).size() == 2, "Expected %s to be doubled in %s", dateTime, zone);
+    }
+
+    private static DataType<Float> postgreSqlRealDataType()
+    {
+        return dataType("real", RealType.REAL,
+                value -> {
+                    if (Float.isFinite(value)) {
+                        return value.toString();
+                    }
+                    if (Float.isNaN(value)) {
+                        return "'NaN'::real";
+                    }
+                    return format("'%sInfinity'::real", value > 0 ? "+" : "-");
+                },
+                realDataType()::toPrestoLiteral,
+                Function.identity());
+    }
+
+    private static DataType<Double> postgreSqlDoubleDataType()
+    {
+        return dataType("double precision", DoubleType.DOUBLE,
+                value -> {
+                    if (Double.isFinite(value)) {
+                        return value.toString();
+                    }
+                    if (Double.isNaN(value)) {
+                        return "'NaN'::double precision";
+                    }
+                    return format("'%sInfinity'::double precision", value > 0 ? "+" : "-");
+                },
+                doubleDataType()::toPrestoLiteral,
+                Function.identity());
     }
 }

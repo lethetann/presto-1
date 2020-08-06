@@ -19,11 +19,9 @@ databases:
       - USE ${databases.hive.schema}
     table_manager_type: hive
     warehouse_directory_path: /user/hive/warehouse
-    path: /user/hive/warehouse
     inject_stats_for_immutable_tables: true
     inject_stats_for_mutable_tables: true
-    major_version: ${TESTS_HIVE_VERSION_MAJOR}
-    minor_version: ${TESTS_HIVE_VERSION_MINOR}
+    enforce_non_transactional_tables: false
     metastore:
       host: ${databases.hive.host}
       port: 9083
@@ -32,7 +30,7 @@ databases:
     host: localhost
     port: 8080
     server_address: http://${databases.presto.host}:${databases.presto.port}
-    jdbc_driver_class: ${PRESTO_JDBC_DRIVER_CLASS:-io.prestosql.jdbc.PrestoDriver}
+    jdbc_driver_class: io.prestosql.jdbc.PrestoDriver
     jdbc_url: jdbc:presto://${databases.presto.host}:${databases.presto.port}/hive/${databases.hive.schema}
     jdbc_user: hive
     jdbc_password: "***empty***"
@@ -104,7 +102,7 @@ databases:
 
   postgres:
     jdbc_driver_class: org.postgresql.Driver
-    jdbc_url: jdbc:postgresql://postgres:15432/test
+    jdbc_url: jdbc:postgresql://postgresql:15432/test
     jdbc_user: test
     jdbc_password: test
     jdbc_pooling: true
@@ -125,12 +123,24 @@ databases:
     jdbc_pooling: true
     table_manager_type: jdbc
 
+  spark:
+    host: spark
+    jdbc_driver_class: org.apache.hive.jdbc.HiveDriver
+    jdbc_url: jdbc:hive2://${databases.spark.host}:10213
+    jdbc_user: hive
+    jdbc_password: na
+    jdbc_pooling: false
+    schema: default
+    prepare_statement:
+      - USE ${databases.spark.schema}
+    table_manager_type: jdbc
+
   kafka:
     broker:
       host: kafka
       port: 9092
     zookeeper:
-      host: kafka
+      host: zookeeper
       port: 2181
     presto_database_name: presto
     presto_kafka_catalog: kafka

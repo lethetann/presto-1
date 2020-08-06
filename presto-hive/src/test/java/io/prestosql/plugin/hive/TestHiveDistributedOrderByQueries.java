@@ -16,7 +16,7 @@ package io.prestosql.plugin.hive;
 import io.prestosql.testing.AbstractTestOrderByQueries;
 import io.prestosql.testing.QueryRunner;
 
-import static io.airlift.tpch.TpchTable.getTables;
+import static io.prestosql.tpch.TpchTable.getTables;
 
 public class TestHiveDistributedOrderByQueries
         extends AbstractTestOrderByQueries
@@ -25,6 +25,8 @@ public class TestHiveDistributedOrderByQueries
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return HiveQueryRunner.createQueryRunner(getTables());
+        return HiveQueryRunner.builder()
+                .setInitialTables(getTables())
+                .build();
     }
 }

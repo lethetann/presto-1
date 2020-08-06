@@ -23,11 +23,12 @@ import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.airlift.units.MaxDataSize;
+import io.airlift.units.MaxDuration;
+import io.airlift.units.MinDuration;
 import io.prestosql.operator.aggregation.arrayagg.ArrayAggGroupImplementation;
 import io.prestosql.operator.aggregation.histogram.HistogramGroupImplementation;
 import io.prestosql.operator.aggregation.multimapagg.MultimapAggGroupImplementation;
 
-import javax.validation.constraints.AssertTrue;
 import javax.validation.constraints.DecimalMax;
 import javax.validation.constraints.DecimalMin;
 import javax.validation.constraints.Min;
@@ -39,10 +40,10 @@ import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
-import static io.prestosql.sql.analyzer.FeaturesConfig.JoinDistributionType.PARTITIONED;
-import static io.prestosql.sql.analyzer.FeaturesConfig.JoinReorderingStrategy.ELIMINATE_CROSS_JOINS;
+import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.sql.analyzer.RegexLibrary.JONI;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
 @DefunctConfig({
@@ -68,23 +69,25 @@ public class FeaturesConfig
     private double memoryCostWeight = 10;
     private double networkCostWeight = 15;
     private boolean distributedIndexJoinsEnabled;
-    private JoinDistributionType joinDistributionType = PARTITIONED;
-    private DataSize joinMaxBroadcastTableSize;
+    private DataSize joinMaxBroadcastTableSize = DataSize.of(100, MEGABYTE);
+    private JoinDistributionType joinDistributionType = JoinDistributionType.AUTOMATIC;
     private boolean colocatedJoinsEnabled;
     private boolean groupedExecutionEnabled;
     private boolean dynamicScheduleForGroupedExecution;
     private int concurrentLifespansPerTask;
     private boolean spatialJoinsEnabled = true;
     private boolean fastInequalityJoins = true;
-    private JoinReorderingStrategy joinReorderingStrategy = ELIMINATE_CROSS_JOINS;
+    private JoinReorderingStrategy joinReorderingStrategy = JoinReorderingStrategy.AUTOMATIC;
     private int maxReorderedJoins = 9;
     private boolean redistributeWrites = true;
+    private boolean usePreferredWritePartitioning;
     private boolean scaleWriters;
-    private DataSize writerMinSize = new DataSize(32, DataSize.Unit.MEGABYTE);
+    private DataSize writerMinSize = DataSize.of(32, DataSize.Unit.MEGABYTE);
     private boolean optimizeMetadataQueries;
     private boolean optimizeHashGeneration = true;
     private boolean enableIntermediateAggregations;
     private boolean pushTableWriteThroughUnion = true;
+    private DataIntegrityVerification exchangeDataIntegrityVerification = DataIntegrityVerification.ABORT;
     private boolean exchangeCompressionEnabled;
     private boolean legacyTimestamp = true;
     private boolean optimizeMixedDistinctAggregations;
@@ -92,6 +95,7 @@ public class FeaturesConfig
     private boolean forceSingleNodeOutput = true;
     private boolean pagesIndexEagerCompactionEnabled;
     private boolean distributedSort = true;
+    private boolean omitDateTimeTypePrecision;
 
     private boolean dictionaryAggregation;
 
@@ -104,34 +108,36 @@ public class FeaturesConfig
     private boolean spillEnabled;
     private boolean spillOrderBy = true;
     private boolean spillWindowOperator = true;
-    private DataSize aggregationOperatorUnspillMemoryLimit = new DataSize(4, DataSize.Unit.MEGABYTE);
+    private DataSize aggregationOperatorUnspillMemoryLimit = DataSize.of(4, DataSize.Unit.MEGABYTE);
     private List<Path> spillerSpillPaths = ImmutableList.of();
     private int spillerThreads = 4;
     private double spillMaxUsedSpaceThreshold = 0.9;
-    private boolean iterativeOptimizerEnabled = true;
     private boolean enableStatsCalculator = true;
     private boolean collectPlanStatisticsForAllQueries;
     private boolean ignoreStatsCalculatorFailures = true;
     private boolean defaultFilterFactorEnabled;
     private boolean enableForcedExchangeBelowGroupId = true;
-    private boolean pushAggregationThroughJoin = true;
+    private boolean pushAggregationThroughOuterJoin = true;
+    private boolean pushPartialAggregationThoughJoin;
     private double memoryRevokingTarget = 0.5;
     private double memoryRevokingThreshold = 0.9;
     private boolean parseDecimalLiteralsAsDouble;
     private boolean useMarkDistinct = true;
     private boolean preferPartialAggregation = true;
     private boolean optimizeTopNRowNumber = true;
-    private boolean workProcessorPipelines;
+    private boolean lateMaterializationEnabled;
     private boolean skipRedundantSort = true;
     private boolean predicatePushdownUseTableProperties = true;
     private boolean ignoreDownstreamPreferences;
+    private boolean iterativeRuleBasedColumnPruning = true;
 
     private Duration iterativeOptimizerTimeout = new Duration(3, MINUTES); // by default let optimizer wait a long time in case it retrieves some data from ConnectorMetadata
-    private boolean enableDynamicFiltering;
+    private boolean enableDynamicFiltering = true;
     private int dynamicFilteringMaxPerDriverRowCount = 100;
-    private DataSize dynamicFilteringMaxPerDriverSize = new DataSize(10, KILOBYTE);
+    private DataSize dynamicFilteringMaxPerDriverSize = DataSize.of(10, KILOBYTE);
+    private Duration dynamicFilteringRefreshInterval = new Duration(200, MILLISECONDS);
 
-    private DataSize filterAndProjectMinOutputPageSize = new DataSize(500, KILOBYTE);
+    private DataSize filterAndProjectMinOutputPageSize = DataSize.of(500, KILOBYTE);
     private int filterAndProjectMinOutputPageRowCount = 256;
     private int maxGroupingSets = 2048;
 
@@ -157,6 +163,14 @@ public class FeaturesConfig
         {
             return this == BROADCAST || this == AUTOMATIC;
         }
+    }
+
+    public enum DataIntegrityVerification
+    {
+        NONE,
+        ABORT,
+        RETRY,
+        /**/;
     }
 
     public double getCpuCostWeight()
@@ -207,6 +221,18 @@ public class FeaturesConfig
         return this;
     }
 
+    public boolean isOmitDateTimeTypePrecision()
+    {
+        return omitDateTimeTypePrecision;
+    }
+
+    @Config("deprecated.omit-datetime-type-precision")
+    public FeaturesConfig setOmitDateTimeTypePrecision(boolean value)
+    {
+        this.omitDateTimeTypePrecision = value;
+        return this;
+    }
+
     @Config("deprecated.legacy-timestamp")
     public FeaturesConfig setLegacyTimestamp(boolean value)
     {
@@ -231,6 +257,7 @@ public class FeaturesConfig
         return this;
     }
 
+    @NotNull
     public DataSize getJoinMaxBroadcastTableSize()
     {
         return joinMaxBroadcastTableSize;
@@ -360,6 +387,18 @@ public class FeaturesConfig
     public FeaturesConfig setRedistributeWrites(boolean redistributeWrites)
     {
         this.redistributeWrites = redistributeWrites;
+        return this;
+    }
+
+    public boolean isUsePreferredWritePartitioning()
+    {
+        return usePreferredWritePartitioning;
+    }
+
+    @Config("use-preferred-write-partitioning")
+    public FeaturesConfig setUsePreferredWritePartitioning(boolean usePreferredWritePartitioning)
+    {
+        this.usePreferredWritePartitioning = usePreferredWritePartitioning;
         return this;
     }
 
@@ -550,19 +589,6 @@ public class FeaturesConfig
         return this;
     }
 
-    public boolean isIterativeOptimizerEnabled()
-    {
-        return iterativeOptimizerEnabled;
-    }
-
-    @Config("iterative-optimizer-enabled")
-    @LegacyConfig("experimental.iterative-optimizer-enabled")
-    public FeaturesConfig setIterativeOptimizerEnabled(boolean value)
-    {
-        this.iterativeOptimizerEnabled = value;
-        return this;
-    }
-
     public Duration getIterativeOptimizerTimeout()
     {
         return iterativeOptimizerTimeout;
@@ -666,12 +692,6 @@ public class FeaturesConfig
         return this;
     }
 
-    @AssertTrue(message = SPILLER_SPILL_PATH + " must be configured when " + SPILL_ENABLED + " is set to true")
-    public boolean isSpillerSpillPathsConfiguredIfSpillEnabled()
-    {
-        return !isSpillEnabled() || !spillerSpillPaths.isEmpty();
-    }
-
     @Min(1)
     public int getSpillerThreads()
     {
@@ -736,7 +756,8 @@ public class FeaturesConfig
         return enableDynamicFiltering;
     }
 
-    @Config("experimental.enable-dynamic-filtering")
+    @Config("enable-dynamic-filtering")
+    @LegacyConfig("experimental.enable-dynamic-filtering")
     public FeaturesConfig setEnableDynamicFiltering(boolean value)
     {
         this.enableDynamicFiltering = value;
@@ -748,7 +769,8 @@ public class FeaturesConfig
         return dynamicFilteringMaxPerDriverRowCount;
     }
 
-    @Config("experimental.dynamic-filtering-max-per-driver-row-count")
+    @Config("dynamic-filtering-max-per-driver-row-count")
+    @LegacyConfig("experimental.dynamic-filtering-max-per-driver-row-count")
     public FeaturesConfig setDynamicFilteringMaxPerDriverRowCount(int dynamicFilteringMaxPerDriverRowCount)
     {
         this.dynamicFilteringMaxPerDriverRowCount = dynamicFilteringMaxPerDriverRowCount;
@@ -761,10 +783,26 @@ public class FeaturesConfig
         return dynamicFilteringMaxPerDriverSize;
     }
 
-    @Config("experimental.dynamic-filtering-max-per-driver-size")
+    @Config("dynamic-filtering-max-per-driver-size")
+    @LegacyConfig("experimental.dynamic-filtering-max-per-driver-size")
     public FeaturesConfig setDynamicFilteringMaxPerDriverSize(DataSize dynamicFilteringMaxPerDriverSize)
     {
         this.dynamicFilteringMaxPerDriverSize = dynamicFilteringMaxPerDriverSize;
+        return this;
+    }
+
+    @MinDuration("1ms")
+    @MaxDuration("10s")
+    @NotNull
+    public Duration getDynamicFilteringRefreshInterval()
+    {
+        return dynamicFilteringRefreshInterval;
+    }
+
+    @Config("experimental.dynamic-filtering-refresh-interval")
+    public FeaturesConfig setDynamicFilteringRefreshInterval(Duration dynamicFilteringRefreshInterval)
+    {
+        this.dynamicFilteringRefreshInterval = dynamicFilteringRefreshInterval;
         return this;
     }
 
@@ -804,6 +842,18 @@ public class FeaturesConfig
         return this;
     }
 
+    public DataIntegrityVerification getExchangeDataIntegrityVerification()
+    {
+        return exchangeDataIntegrityVerification;
+    }
+
+    @Config("exchange.data-integrity-verification")
+    public FeaturesConfig setExchangeDataIntegrityVerification(DataIntegrityVerification exchangeDataIntegrityVerification)
+    {
+        this.exchangeDataIntegrityVerification = exchangeDataIntegrityVerification;
+        return this;
+    }
+
     public boolean isEnableIntermediateAggregations()
     {
         return enableIntermediateAggregations;
@@ -816,15 +866,28 @@ public class FeaturesConfig
         return this;
     }
 
-    public boolean isPushAggregationThroughJoin()
+    public boolean isPushAggregationThroughOuterJoin()
     {
-        return pushAggregationThroughJoin;
+        return pushAggregationThroughOuterJoin;
     }
 
-    @Config("optimizer.push-aggregation-through-join")
-    public FeaturesConfig setPushAggregationThroughJoin(boolean value)
+    @Config("optimizer.push-aggregation-through-outer-join")
+    @LegacyConfig("optimizer.push-aggregation-through-join")
+    public FeaturesConfig setPushAggregationThroughOuterJoin(boolean pushAggregationThroughOuterJoin)
     {
-        this.pushAggregationThroughJoin = value;
+        this.pushAggregationThroughOuterJoin = pushAggregationThroughOuterJoin;
+        return this;
+    }
+
+    public boolean isPushPartialAggregationThoughJoin()
+    {
+        return pushPartialAggregationThoughJoin;
+    }
+
+    @Config("optimizer.push-partial-aggregation-through-join")
+    public FeaturesConfig setPushPartialAggregationThoughJoin(boolean pushPartialAggregationThoughJoin)
+    {
+        this.pushPartialAggregationThoughJoin = pushPartialAggregationThoughJoin;
         return this;
     }
 
@@ -952,15 +1015,16 @@ public class FeaturesConfig
         return this;
     }
 
-    public boolean isWorkProcessorPipelines()
+    public boolean isLateMaterializationEnabled()
     {
-        return workProcessorPipelines;
+        return lateMaterializationEnabled;
     }
 
-    @Config("experimental.work-processor-pipelines")
-    public FeaturesConfig setWorkProcessorPipelines(boolean workProcessorPipelines)
+    @Config("experimental.late-materialization.enabled")
+    @LegacyConfig("experimental.work-processor-pipelines")
+    public FeaturesConfig setLateMaterializationEnabled(boolean lateMaterializationEnabled)
     {
-        this.workProcessorPipelines = workProcessorPipelines;
+        this.lateMaterializationEnabled = lateMaterializationEnabled;
         return this;
     }
 
@@ -997,6 +1061,18 @@ public class FeaturesConfig
     public FeaturesConfig setIgnoreDownstreamPreferences(boolean ignoreDownstreamPreferences)
     {
         this.ignoreDownstreamPreferences = ignoreDownstreamPreferences;
+        return this;
+    }
+
+    public boolean isIterativeRuleBasedColumnPruning()
+    {
+        return iterativeRuleBasedColumnPruning;
+    }
+
+    @Config("optimizer.iterative-rule-based-column-pruning")
+    public FeaturesConfig setIterativeRuleBasedColumnPruning(boolean iterativeRuleBasedColumnPruning)
+    {
+        this.iterativeRuleBasedColumnPruning = iterativeRuleBasedColumnPruning;
         return this;
     }
 }

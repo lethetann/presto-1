@@ -21,22 +21,44 @@ import java.util.function.Supplier;
 
 import static io.prestosql.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.prestosql.spi.type.DoubleType.DOUBLE;
+import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 public class DoubleDecoder
         implements Decoder
 {
+    private final String path;
+
+    public DoubleDecoder(String path)
+    {
+        this.path = requireNonNull(path, "path is null");
+    }
+
     @Override
     public void decode(SearchHit hit, Supplier<Object> getter, BlockBuilder output)
     {
         Object value = getter.get();
         if (value == null) {
             output.appendNull();
+            return;
         }
-        else if (value instanceof Number) {
-            DOUBLE.writeDouble(output, ((Number) value).doubleValue());
+
+        double decoded;
+        if (value instanceof Number) {
+            decoded = ((Number) value).doubleValue();
+        }
+        else if (value instanceof String) {
+            try {
+                decoded = Double.parseDouble((String) value);
+            }
+            catch (NumberFormatException e) {
+                throw new PrestoException(TYPE_MISMATCH, format("Cannot parse value for field '%s' as DOUBLE: %s", path, value));
+            }
         }
         else {
-            throw new PrestoException(TYPE_MISMATCH, "Expected a numeric value for DOUBLE field");
+            throw new PrestoException(TYPE_MISMATCH, format("Expected a numeric value for field %s of type DOUBLE: %s [%s]", path, value, value.getClass().getSimpleName()));
         }
+
+        DOUBLE.writeDouble(output, decoded);
     }
 }

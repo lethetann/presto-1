@@ -256,6 +256,9 @@ public class OrderByOperator
         requireNonNull(page, "page is null");
         checkSuccess(spillInProgress, "spilling failed");
 
+        // TODO: remove when retained memory accounting for pages does not
+        // count shared data structures multiple times
+        page.compact();
         pageIndex.addPage(page);
         updateMemoryUsage();
     }
@@ -275,7 +278,7 @@ public class OrderByOperator
         }
 
         Optional<Page> next = sortedPages.next();
-        if (!next.isPresent()) {
+        if (next.isEmpty()) {
             return null;
         }
         Page nextPage = next.get();
@@ -305,7 +308,7 @@ public class OrderByOperator
 
         // TODO try pageIndex.compact(); before spilling, as in com.facebook.presto.operator.HashBuilderOperator.startMemoryRevoke
 
-        if (!spiller.isPresent()) {
+        if (spiller.isEmpty()) {
             spiller = Optional.of(spillerFactory.get().create(
                     sourceTypes,
                     operatorContext.getSpillContext(),
@@ -331,7 +334,7 @@ public class OrderByOperator
 
     private List<WorkProcessor<Page>> getSpilledPages()
     {
-        if (!spiller.isPresent()) {
+        if (spiller.isEmpty()) {
             return ImmutableList.of();
         }
 

@@ -36,6 +36,7 @@ import java.util.Optional;
 
 import static io.prestosql.parquet.ParquetTypeUtils.getDescriptors;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createBaseColumn;
 import static io.prestosql.plugin.hive.parquet.ParquetPageSourceFactory.getParquetTupleDomain;
 import static io.prestosql.spi.block.MethodHandleUtil.methodHandle;
 import static io.prestosql.spi.predicate.TupleDomain.withColumnDomains;
@@ -55,7 +56,7 @@ public class TestParquetPredicateUtils
     @Test
     public void testParquetTupleDomainPrimitiveArray()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_array", HiveType.valueOf("array<int>"), new ArrayType(INTEGER), 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = createBaseColumn("my_array", 0, HiveType.valueOf("array<int>"), new ArrayType(INTEGER), REGULAR, Optional.empty());
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(new ArrayType(INTEGER))));
 
         MessageType fileSchema = new MessageType("hive_schema",
@@ -63,8 +64,8 @@ public class TestParquetPredicateUtils
                         new GroupType(REPEATED, "bag", new PrimitiveType(OPTIONAL, INT32, "array_element"))));
 
         Map<List<String>, RichColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain);
-        assertTrue(tupleDomain.getDomains().get().isEmpty());
+        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain, fileSchema, true);
+        assertTrue(tupleDomain.isAll());
     }
 
     @Test
@@ -73,7 +74,8 @@ public class TestParquetPredicateUtils
         RowType.Field rowField = new RowType.Field(Optional.of("a"), INTEGER);
         RowType rowType = RowType.from(ImmutableList.of(rowField));
 
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_array_struct", HiveType.valueOf("array<struct<a:int>>"), rowType, 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = createBaseColumn("my_array_struct", 0, HiveType.valueOf("array<struct<a:int>>"), rowType, REGULAR, Optional.empty());
+
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(new ArrayType(rowType))));
 
         MessageType fileSchema = new MessageType("hive_schema",
@@ -82,21 +84,21 @@ public class TestParquetPredicateUtils
                                 new GroupType(OPTIONAL, "array_element", new PrimitiveType(OPTIONAL, INT32, "a")))));
 
         Map<List<String>, RichColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain);
-        assertTrue(tupleDomain.getDomains().get().isEmpty());
+        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain, fileSchema, true);
+        assertTrue(tupleDomain.isAll());
     }
 
     @Test
     public void testParquetTupleDomainPrimitive()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_primitive", HiveType.valueOf("bigint"), BIGINT, 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = createBaseColumn("my_primitive", 0, HiveType.valueOf("bigint"), BIGINT, REGULAR, Optional.empty());
         Domain singleValueDomain = Domain.singleValue(BIGINT, 123L);
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, singleValueDomain));
 
         MessageType fileSchema = new MessageType("hive_schema", new PrimitiveType(OPTIONAL, INT64, "my_primitive"));
 
         Map<List<String>, RichColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain);
+        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain, fileSchema, true);
 
         assertEquals(tupleDomain.getDomains().get().size(), 1);
         ColumnDescriptor descriptor = tupleDomain.getDomains().get().keySet().iterator().next();
@@ -114,7 +116,7 @@ public class TestParquetPredicateUtils
                 RowType.field("a", INTEGER),
                 RowType.field("b", INTEGER));
 
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_struct", HiveType.valueOf("struct<a:int,b:int>"), rowType, 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = createBaseColumn("my_struct", 0, HiveType.valueOf("struct<a:int,b:int>"), rowType, REGULAR, Optional.empty());
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(rowType)));
 
         MessageType fileSchema = new MessageType("hive_schema",
@@ -122,8 +124,8 @@ public class TestParquetPredicateUtils
                         new PrimitiveType(OPTIONAL, INT32, "a"),
                         new PrimitiveType(OPTIONAL, INT32, "b")));
         Map<List<String>, RichColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain);
-        assertTrue(tupleDomain.getDomains().get().isEmpty());
+        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain, fileSchema, true);
+        assertTrue(tupleDomain.isAll());
     }
 
     @Test
@@ -137,7 +139,7 @@ public class TestParquetPredicateUtils
                 methodHandle(TestParquetPredicateUtils.class, "throwUnsupportedOperationException"),
                 methodHandle(TestParquetPredicateUtils.class, "throwUnsupportedOperationException"));
 
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_map", HiveType.valueOf("map<int,int>"), mapType, 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = createBaseColumn("my_map", 0, HiveType.valueOf("map<int,int>"), mapType, REGULAR, Optional.empty());
 
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(mapType)));
 
@@ -148,8 +150,8 @@ public class TestParquetPredicateUtils
                                 new PrimitiveType(OPTIONAL, INT32, "value"))));
 
         Map<List<String>, RichColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
-        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain);
-        assertTrue(tupleDomain.getDomains().get().isEmpty());
+        TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain, fileSchema, true);
+        assertTrue(tupleDomain.isAll());
     }
 
     public static void throwUnsupportedOperationException()

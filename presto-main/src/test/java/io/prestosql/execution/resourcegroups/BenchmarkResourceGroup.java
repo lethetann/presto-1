@@ -16,7 +16,6 @@ package io.prestosql.execution.resourcegroups;
 import io.airlift.units.DataSize;
 import io.prestosql.execution.MockManagedQueryExecution;
 import io.prestosql.execution.MockManagedQueryExecution.MockManagedQueryExecutionBuilder;
-import io.prestosql.execution.resourcegroups.InternalResourceGroup.RootInternalResourceGroup;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -38,7 +37,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 
 @SuppressWarnings("MethodMayBeStatic")
@@ -68,25 +66,25 @@ public class BenchmarkResourceGroup
         private int queries = 100;
 
         private final ExecutorService executor = Executors.newSingleThreadExecutor();
-        private RootInternalResourceGroup root;
+        private InternalResourceGroup root;
 
         @Setup
         public void setup()
         {
-            root = new RootInternalResourceGroup("root", (group, export) -> {}, executor);
-            root.setSoftMemoryLimitBytes(new DataSize(1, MEGABYTE).toBytes());
+            root = new InternalResourceGroup("root", (group, export) -> {}, executor);
+            root.setSoftMemoryLimitBytes(DataSize.of(1, MEGABYTE).toBytes());
             root.setMaxQueuedQueries(queries);
             root.setHardConcurrencyLimit(queries);
             InternalResourceGroup group = root;
             for (int i = 0; i < children; i++) {
                 group = root.getOrCreateSubGroup(String.valueOf(i));
-                group.setSoftMemoryLimitBytes(new DataSize(1, MEGABYTE).toBytes());
+                group.setSoftMemoryLimitBytes(DataSize.of(1, MEGABYTE).toBytes());
                 group.setMaxQueuedQueries(queries);
                 group.setHardConcurrencyLimit(queries);
             }
             for (int i = 0; i < queries; i++) {
                 MockManagedQueryExecution query = new MockManagedQueryExecutionBuilder()
-                        .withInitialMemoryUsage(new DataSize(10, BYTE))
+                        .withInitialMemoryUsage(DataSize.ofBytes(10))
                         .build();
                 group.run(query);
             }
@@ -98,14 +96,14 @@ public class BenchmarkResourceGroup
             executor.shutdownNow();
         }
 
-        public RootInternalResourceGroup getRoot()
+        public InternalResourceGroup getRoot()
         {
             return root;
         }
     }
 
     public static void main(String[] args)
-            throws Throwable
+            throws Exception
     {
         Options options = new OptionsBuilder()
                 .verbosity(VerboseMode.NORMAL)

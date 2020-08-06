@@ -35,6 +35,7 @@ import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.connector.SchemaTableName;
+import io.prestosql.spi.type.Decimals;
 import io.prestosql.spi.type.StandardTypes;
 import io.prestosql.spi.type.Type;
 import io.prestosql.spi.type.TypeManager;
@@ -51,7 +52,9 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.function.BiFunction;
 
@@ -63,21 +66,32 @@ import static com.mysql.jdbc.SQLError.SQL_STATE_ER_TABLE_EXISTS_ERROR;
 import static com.mysql.jdbc.SQLError.SQL_STATE_SYNTAX_ERROR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.prestosql.plugin.jdbc.ColumnMapping.DISABLE_PUSHDOWN;
+import static io.prestosql.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
+import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
+import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
+import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
 import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
+import static io.prestosql.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
+import static io.prestosql.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
+import static io.prestosql.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.realWriteFunction;
+import static io.prestosql.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.timestampWriteFunctionUsingSqlTimestamp;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.prestosql.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.prestosql.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.prestosql.spi.type.DecimalType.createDecimalType;
 import static io.prestosql.spi.type.RealType.REAL;
 import static io.prestosql.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
 import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
 import static io.prestosql.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
 import static io.prestosql.spi.type.VarbinaryType.VARBINARY;
 import static io.prestosql.spi.type.Varchars.isVarcharType;
+import static java.lang.Math.min;
 import static java.lang.String.format;
+import static java.math.RoundingMode.UNNECESSARY;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Locale.ENGLISH;
 
@@ -102,7 +116,7 @@ public class MySqlClient
             while (resultSet.next()) {
                 String schemaName = resultSet.getString("TABLE_CAT");
                 // skip internal schemas
-                if (!schemaName.equalsIgnoreCase("information_schema") && !schemaName.equalsIgnoreCase("mysql")) {
+                if (filterSchema(schemaName)) {
                     schemaNames.add(schemaName);
                 }
             }
@@ -111,6 +125,15 @@ public class MySqlClient
         catch (SQLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Override
+    protected boolean filterSchema(String schemaName)
+    {
+        if (schemaName.equalsIgnoreCase("mysql")) {
+            return false;
+        }
+        return super.filterSchema(schemaName);
     }
 
     @Override
@@ -164,8 +187,20 @@ public class MySqlClient
         if (mapping.isPresent()) {
             return mapping;
         }
+        Optional<ColumnMapping> unsignedMapping = getUnsignedMapping(typeHandle);
+        if (unsignedMapping.isPresent()) {
+            return unsignedMapping;
+        }
+
         if (jdbcTypeName.equalsIgnoreCase("json")) {
             return Optional.of(jsonColumnMapping());
+        }
+        if (typeHandle.getJdbcType() == Types.DECIMAL && getDecimalRounding(session) == ALLOW_OVERFLOW) {
+            int precision = typeHandle.getColumnSize();
+            if (precision > Decimals.MAX_PRECISION) {
+                int scale = min(typeHandle.getDecimalDigits(), getDecimalDefaultScale(session));
+                return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
+            }
         }
         return super.toPrestoType(session, connection, typeHandle);
     }
@@ -250,6 +285,16 @@ public class MySqlClient
     }
 
     @Override
+    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
+    {
+        String sql = format(
+                "CREATE TABLE %s LIKE %s",
+                quoted(catalogName, schemaName, newTableName),
+                quoted(catalogName, schemaName, tableName));
+        execute(connection, sql);
+    }
+
+    @Override
     public void renameTable(JdbcIdentity identity, JdbcTableHandle handle, SchemaTableName newTableName)
     {
         // MySQL doesn't support specifying the catalog name in a rename. By setting the
@@ -265,7 +310,7 @@ public class MySqlClient
     }
 
     @Override
-    public boolean isLimitGuaranteed()
+    public boolean isLimitGuaranteed(ConnectorSession session)
     {
         return true;
     }
@@ -277,6 +322,29 @@ public class MySqlClient
                 (resultSet, columnIndex) -> jsonParse(utf8Slice(resultSet.getString(columnIndex))),
                 varcharWriteFunction(),
                 DISABLE_PUSHDOWN);
+    }
+
+    private static Optional<ColumnMapping> getUnsignedMapping(JdbcTypeHandle typeHandle)
+    {
+        if (typeHandle.getJdbcTypeName().isEmpty()) {
+            return Optional.empty();
+        }
+
+        String typeName = typeHandle.getJdbcTypeName().get();
+        if (typeName.equalsIgnoreCase("tinyint unsigned")) {
+            return Optional.of(smallintColumnMapping());
+        }
+        else if (typeName.equalsIgnoreCase("smallint unsigned")) {
+            return Optional.of(integerColumnMapping());
+        }
+        else if (typeName.equalsIgnoreCase("int unsigned")) {
+            return Optional.of(bigintColumnMapping());
+        }
+        else if (typeName.equalsIgnoreCase("bigint unsigned")) {
+            return Optional.of(decimalColumnMapping(createDecimalType(20), UNNECESSARY));
+        }
+
+        return Optional.empty();
     }
 
     private static final JsonFactory JSON_FACTORY = new JsonFactory()

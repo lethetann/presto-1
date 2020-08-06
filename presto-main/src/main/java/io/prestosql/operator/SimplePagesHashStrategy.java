@@ -15,6 +15,7 @@ package io.prestosql.operator;
 
 import com.google.common.collect.ImmutableList;
 import io.prestosql.metadata.Metadata;
+import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PageBuilder;
 import io.prestosql.spi.block.Block;
@@ -69,9 +70,9 @@ public class SimplePagesHashStrategy
         this.sortChannel = requireNonNull(sortChannel, "sortChannel is null");
         requireNonNull(metadata, "metadata is null");
         ImmutableList.Builder<MethodHandle> distinctFromMethodHandlesBuilder = ImmutableList.builder();
-        for (Type type : types) {
-            distinctFromMethodHandlesBuilder.add(
-                    metadata.getScalarFunctionImplementation(metadata.resolveOperator(IS_DISTINCT_FROM, ImmutableList.of(type, type))).getMethodHandle());
+        for (int i = 0; i < hashChannels.size(); i++) {
+            ResolvedFunction resolvedFunction = metadata.resolveOperator(IS_DISTINCT_FROM, ImmutableList.of(types.get(i), types.get(i)));
+            distinctFromMethodHandlesBuilder.add(metadata.getScalarFunctionInvoker(resolvedFunction, Optional.empty()).getMethodHandle());
         }
         distinctFromMethodHandles = distinctFromMethodHandlesBuilder.build();
     }
@@ -198,7 +199,7 @@ public class SimplePagesHashStrategy
             int hashChannel = hashChannels.get(i);
             Block leftBlock = channels.get(hashChannel).get(leftBlockIndex);
             Block rightBlock = page.getBlock(rightChannels[i]);
-            MethodHandle methodHandle = distinctFromMethodHandles.get(hashChannel);
+            MethodHandle methodHandle = distinctFromMethodHandles.get(i);
             try {
                 if (!(boolean) methodHandle.invokeExact(leftBlock, leftPosition, rightBlock, rightPosition)) {
                     return false;

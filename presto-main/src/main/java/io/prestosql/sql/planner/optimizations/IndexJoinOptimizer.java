@@ -22,10 +22,10 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
+import io.prestosql.metadata.BoundSignature;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.metadata.ResolvedIndex;
-import io.prestosql.metadata.Signature;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.sql.planner.DomainTranslator;
@@ -126,7 +126,7 @@ public class IndexJoinOptimizer
                 if (leftIndexCandidate.isPresent()) {
                     // Sanity check that we can trace the path for the index lookup key
                     Map<Symbol, Symbol> trace = IndexKeyTracer.trace(leftIndexCandidate.get(), ImmutableSet.copyOf(leftJoinSymbols));
-                    checkState(!trace.isEmpty() && leftJoinSymbols.containsAll(trace.keySet()));
+                    checkState(!trace.isEmpty());
                 }
 
                 Optional<PlanNode> rightIndexCandidate = IndexSourceRewriter.rewriteWithIndex(
@@ -139,7 +139,7 @@ public class IndexJoinOptimizer
                 if (rightIndexCandidate.isPresent()) {
                     // Sanity check that we can trace the path for the index lookup key
                     Map<Symbol, Symbol> trace = IndexKeyTracer.trace(rightIndexCandidate.get(), ImmutableSet.copyOf(rightJoinSymbols));
-                    checkState(!trace.isEmpty() && rightJoinSymbols.containsAll(trace.keySet()));
+                    checkState(!trace.isEmpty());
                 }
 
                 switch (node.getType()) {
@@ -171,14 +171,14 @@ public class IndexJoinOptimizer
 
                     case LEFT:
                         // We cannot use indices for outer joins until index join supports in-line filtering
-                        if (!node.getFilter().isPresent() && rightIndexCandidate.isPresent()) {
+                        if (node.getFilter().isEmpty() && rightIndexCandidate.isPresent()) {
                             return createIndexJoinWithExpectedOutputs(node.getOutputSymbols(), IndexJoinNode.Type.SOURCE_OUTER, leftRewritten, rightIndexCandidate.get(), createEquiJoinClause(leftJoinSymbols, rightJoinSymbols), idAllocator);
                         }
                         break;
 
                     case RIGHT:
                         // We cannot use indices for outer joins until index join supports in-line filtering
-                        if (!node.getFilter().isPresent() && leftIndexCandidate.isPresent()) {
+                        if (node.getFilter().isEmpty() && leftIndexCandidate.isPresent()) {
                             return createIndexJoinWithExpectedOutputs(node.getOutputSymbols(), IndexJoinNode.Type.SOURCE_OUTER, rightRewritten, leftIndexCandidate.get(), createEquiJoinClause(rightJoinSymbols, leftJoinSymbols), idAllocator);
                         }
                         break;
@@ -192,7 +192,21 @@ public class IndexJoinOptimizer
             }
 
             if (leftRewritten != node.getLeft() || rightRewritten != node.getRight()) {
-                return new JoinNode(node.getId(), node.getType(), leftRewritten, rightRewritten, node.getCriteria(), node.getOutputSymbols(), node.getFilter(), node.getLeftHashSymbol(), node.getRightHashSymbol(), node.getDistributionType(), node.isSpillable(), node.getDynamicFilters());
+                return new JoinNode(
+                        node.getId(),
+                        node.getType(),
+                        leftRewritten,
+                        rightRewritten,
+                        node.getCriteria(),
+                        node.getLeftOutputSymbols(),
+                        node.getRightOutputSymbols(),
+                        node.getFilter(),
+                        node.getLeftHashSymbol(),
+                        node.getRightHashSymbol(),
+                        node.getDistributionType(),
+                        node.isSpillable(),
+                        node.getDynamicFilters(),
+                        node.getReorderJoinStatsAndCost());
             }
             return node;
         }
@@ -292,7 +306,7 @@ public class IndexJoinOptimizer
             Set<ColumnHandle> outputColumns = node.getOutputSymbols().stream().map(node.getAssignments()::get).collect(toImmutableSet());
 
             Optional<ResolvedIndex> optionalResolvedIndex = metadata.resolveIndex(session, node.getTable(), lookupColumns, outputColumns, simplifiedConstraint);
-            if (!optionalResolvedIndex.isPresent()) {
+            if (optionalResolvedIndex.isEmpty()) {
                 // No index available, so give up by returning something
                 return node;
             }
@@ -306,8 +320,7 @@ public class IndexJoinOptimizer
                     node.getTable(),
                     context.getLookupSymbols(),
                     node.getOutputSymbols(),
-                    node.getAssignments(),
-                    simplifiedConstraint);
+                    node.getAssignments());
 
             Expression resultingPredicate = combineConjuncts(
                     metadata,
@@ -355,7 +368,7 @@ public class IndexJoinOptimizer
             if (!node.getWindowFunctions().values().stream()
                     .map(Function::getResolvedFunction)
                     .map(ResolvedFunction::getSignature)
-                    .map(Signature::getName)
+                    .map(BoundSignature::getName)
                     .map(QualifiedName::of)
                     .allMatch(metadata::isAggregationFunction)) {
                 return node;
@@ -442,7 +455,7 @@ public class IndexJoinOptimizer
 
             public Context(Set<Symbol> lookupSymbols, AtomicBoolean success)
             {
-                checkArgument(!lookupSymbols.isEmpty(), "lookupSymbols can not be empty");
+                checkArgument(!lookupSymbols.isEmpty(), "lookupSymbols cannot be empty");
                 this.lookupSymbols = ImmutableSet.copyOf(requireNonNull(lookupSymbols, "lookupSymbols is null"));
                 this.success = requireNonNull(success, "success is null");
             }

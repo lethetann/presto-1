@@ -23,9 +23,11 @@ import io.prestosql.tempto.configuration.Configuration;
 import io.prestosql.tempto.fulfillment.table.MutableTableRequirement;
 import io.prestosql.tempto.fulfillment.table.hive.HiveTableDefinition;
 import io.prestosql.tempto.fulfillment.table.hive.InlineDataSource;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.util.List;
+import java.util.Objects;
 
 import static io.prestosql.tempto.assertions.QueryAssert.Row.row;
 import static io.prestosql.tempto.assertions.QueryAssert.anyOf;
@@ -1141,7 +1143,7 @@ public class TestHiveTableStatistics
                     "           REAL '123.340', DOUBLE '234.560', " +
                     "           CAST(343.0 AS DECIMAL(10, 0)), " +
                     "           CAST(345.670 AS DECIMAL(10, 5)), " +
-                    "           TIMESTAMP '2015-05-10 12:15:30', " +
+                    "           TIMESTAMP '2015-05-10 12:15:30.000', " +
                     "           DATE '2015-05-08', " +
                     "           CAST('p1 varchar' AS VARCHAR), " +
                     "           CAST('p1 varchar10' AS VARCHAR(10)), " +
@@ -1160,7 +1162,7 @@ public class TestHiveTableStatistics
                     "           DOUBLE '777.560', " +
                     "           CAST(888.0 AS DECIMAL(10, 0)), " +
                     "           CAST(999.670 AS DECIMAL(10, 5)), " +
-                    "           TIMESTAMP '2015-05-10 12:45:30', " +
+                    "           TIMESTAMP '2015-05-10 12:45:30.000', " +
                     "           DATE '2015-05-09', " +
                     "           CAST('p2 varchar' AS VARCHAR), " +
                     "           CAST('p2 varchar10' AS VARCHAR(10)), " +
@@ -1360,6 +1362,111 @@ public class TestHiveTableStatistics
         }
         finally {
             query(format("DROP TABLE IF EXISTS %s", tableName));
+        }
+    }
+
+    @Test(dataProvider = "testComputeFloatingPointStatisticsDataProvider")
+    public void testComputeFloatingPointStatistics(String dataType)
+    {
+        String tableName = "test_compute_floating_point_statistics";
+        query("DROP TABLE IF EXISTS " + tableName);
+        try {
+            query(format("CREATE TABLE %1$s(c_basic %2$s, c_minmax %2$s, c_inf %2$s, c_ninf %2$s, c_nan %2$s, c_nzero %2$s)", tableName, dataType));
+            query("ANALYZE " + tableName); // TODO remove after https://github.com/prestosql/presto/issues/2469
+
+            query(format(
+                    "INSERT INTO %1$s(c_basic, c_minmax, c_inf, c_ninf, c_nan, c_nzero) VALUES " +
+                            "  (%2$s '42.3', %2$s '576234.567',  %2$s 'Infinity', %2$s '-Infinity', %2$s 'NaN', %2$s '-0')," +
+                            "  (%2$s '42.3', %2$s '-1234567.89', %2$s '-15', %2$s '45', %2$s '12345', %2$s '-47'), " +
+                            "  (NULL, NULL, NULL, NULL, NULL, NULL)",
+                    tableName,
+                    dataType));
+
+            List<Row> expectedStatistics = ImmutableList.of(
+                    row("c_basic", null, 1., 0.33333333333, null, "42.3", "42.3"),
+                    Objects.equals(dataType, "double")
+                            ? row("c_minmax", null, 2., 0.33333333333, null, "-1234567.89", "576234.567")
+                            : row("c_minmax", null, 2., 0.33333333333, null, "-1234567.9", "576234.56"),
+                    row("c_inf", null, 2., 0.33333333333, null, null, null), // -15, +inf
+                    row("c_ninf", null, 2., 0.33333333333, null, null, null), // -inf, 45
+                    row("c_nan", null, 2., 0.33333333333, null, null, null), // 12345., NaN
+                    row("c_nzero", null, 2., 0.33333333333, null, "-47.0", "0.0"),
+                    row(null, null, null, null, 3., null, null));
+
+            assertThat(query("SHOW STATS FOR " + tableName)).containsOnly(expectedStatistics);
+
+            query("ANALYZE " + tableName);
+            assertThat(query("SHOW STATS FOR " + tableName)).containsOnly(expectedStatistics);
+        }
+        finally {
+            query("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @DataProvider
+    public Object[][] testComputeFloatingPointStatisticsDataProvider()
+    {
+        return new Object[][] {
+                {"real"},
+                {"double"},
+        };
+    }
+
+    @Test
+    public void testMixedHiveAndPrestoStatistics()
+    {
+        String tableName = "test_mixed_hive_and_presto_statistics";
+        onHive().executeQuery(format("DROP TABLE IF EXISTS %s", tableName));
+        onHive().executeQuery(format("CREATE TABLE %s (a INT) PARTITIONED BY (p INT) STORED AS ORC TBLPROPERTIES ('transactional' = 'false')", tableName));
+
+        try {
+            onHive().executeQuery(format("INSERT OVERWRITE TABLE %s PARTITION (p=1) VALUES (1),(2),(3),(4)", tableName));
+            onHive().executeQuery(format("INSERT OVERWRITE TABLE %s PARTITION (p=2) VALUES (10),(11),(12)", tableName));
+
+            String showStatsPartitionOne = format("SHOW STATS FOR (SELECT * FROM %s WHERE p = 1)", tableName);
+            String showStatsPartitionTwo = format("SHOW STATS FOR (SELECT * FROM %s WHERE p = 2)", tableName);
+            String showStatsWholeTable = format("SHOW STATS FOR %s", tableName);
+
+            // drop all stats; which could have been created on insert
+            query(format("CALL system.drop_stats('default', '%s')", tableName));
+
+            // sanity check that there are no statistics
+            assertThat(query(showStatsPartitionOne)).containsOnly(
+                    row("p", null, null, null, null, null, null),
+                    row("a", null, null, null, null, null, null),
+                    row(null, null, null, null, null, null, null));
+            assertThat(query(showStatsPartitionTwo)).containsOnly(
+                    row("p", null, null, null, null, null, null),
+                    row("a", null, null, null, null, null, null),
+                    row(null, null, null, null, null, null, null));
+            assertThat(query(showStatsWholeTable)).containsOnly(
+                    row("p", null, null, null, null, null, null),
+                    row("a", null, null, null, null, null, null),
+                    row(null, null, null, null, null, null, null));
+
+            // analyze first partition with Presto and second with Hive
+            query(format("ANALYZE %s WITH (partitions = ARRAY[ARRAY['1']])", tableName));
+            onHive().executeQuery(format("ANALYZE TABLE %s PARTITION (p = \"2\") COMPUTE STATISTICS", tableName));
+            onHive().executeQuery(format("ANALYZE TABLE %s PARTITION (p = \"2\") COMPUTE STATISTICS FOR COLUMNS", tableName));
+
+            // we can get stats for individual partitions
+            assertThat(query(showStatsPartitionOne)).containsOnly(
+                    row("p", null, 1.0, 0.0, null, "1", "1"),
+                    row("a", null, 4.0, 0.0, null, "1", "4"),
+                    row(null, null, null, null, 4.0, null, null));
+            assertThat(query(showStatsPartitionTwo)).containsOnly(
+                    row("p", null, 1.0, 0.0, null, "2", "2"),
+                    row("a", null, 3.0, 0.0, null, "10", "12"),
+                    row(null, null, null, null, 3.0, null, null));
+
+            // as well as for whole table
+            assertThat(query(showStatsWholeTable)).containsOnly(
+                    row("p", null, 2.0, 0.0, null, "1", "2"),
+                    row("a", null, 4.0, 0.0, null, "1", "12"),
+                    row(null, null, null, null, 7.0, null, null));
+        }
+        finally {
+            onHive().executeQuery("DROP TABLE " + tableName);
         }
     }
 

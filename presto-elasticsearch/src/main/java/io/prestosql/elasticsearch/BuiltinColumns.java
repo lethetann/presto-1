@@ -13,6 +13,7 @@
  */
 package io.prestosql.elasticsearch;
 
+import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.type.Type;
 
@@ -25,9 +26,9 @@ import static io.prestosql.spi.type.VarcharType.VARCHAR;
 
 enum BuiltinColumns
 {
-    ID("_id", VARCHAR),
-    SOURCE("_source", VARCHAR),
-    SCORE("_score", REAL);
+    ID("_id", VARCHAR, true),
+    SOURCE("_source", VARCHAR, false),
+    SCORE("_score", REAL, false);
 
     public static final Set<String> NAMES = Arrays.stream(values())
             .map(BuiltinColumns::getName)
@@ -35,11 +36,13 @@ enum BuiltinColumns
 
     private final String name;
     private final Type type;
+    private final boolean supportsPredicates;
 
-    BuiltinColumns(String name, Type type)
+    BuiltinColumns(String name, Type type, boolean supportsPredicates)
     {
         this.name = name;
         this.type = type;
+        this.supportsPredicates = supportsPredicates;
     }
 
     public String getName()
@@ -59,5 +62,10 @@ enum BuiltinColumns
                 .setType(type)
                 .setHidden(true)
                 .build();
+    }
+
+    public ColumnHandle getColumnHandle()
+    {
+        return new ElasticsearchColumnHandle(name, type, supportsPredicates);
     }
 }

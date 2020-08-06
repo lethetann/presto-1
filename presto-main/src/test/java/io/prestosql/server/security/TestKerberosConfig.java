@@ -16,7 +16,9 @@ package io.prestosql.server.security;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
-import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
@@ -35,26 +37,37 @@ public class TestKerberosConfig
                 .setServiceName(null)
                 .setKeytab(null)
                 .setPrincipalHostname(null)
-                .setNameType(HOSTBASED_SERVICE));
+                .setNameType(HOSTBASED_SERVICE)
+                .setUserMappingPattern(null)
+                .setUserMappingFile(null));
     }
 
     @Test
     public void testExplicitPropertyMappings()
+            throws IOException
     {
+        Path krbConfigFile = Files.createTempFile(null, null);
+        Path keytabFile = Files.createTempFile(null, null);
+        Path userMappingFile = Files.createTempFile(null, null);
+
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("http.authentication.krb5.config", "/etc/krb5.conf")
+                .put("http.authentication.krb5.config", krbConfigFile.toString())
                 .put("http-server.authentication.krb5.service-name", "airlift")
-                .put("http-server.authentication.krb5.keytab", "/tmp/presto.keytab")
+                .put("http-server.authentication.krb5.keytab", keytabFile.toString())
                 .put("http-server.authentication.krb5.principal-hostname", "presto.prestosql.io")
                 .put("http-server.authentication.krb5.name-type", "USER_NAME")
+                .put("http-server.authentication.krb5.user-mapping.pattern", "(.*)@something")
+                .put("http-server.authentication.krb5.user-mapping.file", userMappingFile.toString())
                 .build();
 
         KerberosConfig expected = new KerberosConfig()
-                .setKerberosConfig(new File("/etc/krb5.conf"))
+                .setKerberosConfig(krbConfigFile.toFile())
                 .setServiceName("airlift")
-                .setKeytab(new File("/tmp/presto.keytab"))
+                .setKeytab(keytabFile.toFile())
                 .setPrincipalHostname("presto.prestosql.io")
-                .setNameType(USER_NAME);
+                .setNameType(USER_NAME)
+                .setUserMappingPattern("(.*)@something")
+                .setUserMappingFile(userMappingFile.toFile());
 
         assertFullMapping(properties, expected);
     }

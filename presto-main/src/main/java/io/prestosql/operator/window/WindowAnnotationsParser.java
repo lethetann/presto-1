@@ -27,7 +27,7 @@ import java.util.stream.Stream;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.metadata.Signature.typeVariable;
-import static io.prestosql.operator.TypeSignatureParser.parseTypeSignature;
+import static io.prestosql.sql.analyzer.TypeSignatureTranslator.parseTypeSignature;
 
 public final class WindowAnnotationsParser
 {
@@ -61,6 +61,7 @@ public final class WindowAnnotationsParser
                 argumentTypes,
                 false);
 
-        return new SqlWindowFunction(new ReflectionWindowFunctionSupplier<>(signature, clazz));
+        boolean deprecated = clazz.getAnnotationsByType(Deprecated.class).length > 0;
+        return new SqlWindowFunction(new ReflectionWindowFunctionSupplier<>(signature, clazz), deprecated);
     }
 }

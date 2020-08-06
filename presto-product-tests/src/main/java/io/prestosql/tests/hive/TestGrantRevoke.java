@@ -15,7 +15,8 @@ package io.prestosql.tests.hive;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.log.Logger;
+import com.google.inject.Inject;
+import com.google.inject.name.Named;
 import io.prestosql.tempto.AfterTestWithContext;
 import io.prestosql.tempto.BeforeTestWithContext;
 import io.prestosql.tempto.ProductTest;
@@ -44,6 +45,10 @@ public class TestGrantRevoke
         extends ProductTest
 {
     private static final Set<String> PREDEFINED_ROLES = ImmutableSet.of("admin", "public");
+
+    @Inject
+    @Named("databases.presto.jdbc_user")
+    private String userName;
 
     private String tableName;
     private String viewName;
@@ -79,14 +84,9 @@ public class TestGrantRevoke
     @AfterTestWithContext
     public void cleanup()
     {
-        try {
-            aliceExecutor.executeQuery(format("DROP TABLE IF EXISTS %s", tableName));
-            aliceExecutor.executeQuery(format("DROP VIEW IF EXISTS %s", viewName));
-            cleanupRoles();
-        }
-        catch (Exception e) {
-            Logger.get(getClass()).warn(e, "failed to drop table/view");
-        }
+        aliceExecutor.executeQuery(format("DROP TABLE IF EXISTS %s", tableName));
+        aliceExecutor.executeQuery(format("DROP VIEW IF EXISTS %s", viewName));
+        cleanupRoles();
     }
 
     @Test(groups = {AUTHORIZATION, PROFILE_SPECIFIC_TESTS})
@@ -144,7 +144,7 @@ public class TestGrantRevoke
                 .containsOnly(ImmutableList.of(
                         row("alice", "USER", "bob", "USER", "hive", "default", "alice_owned_table", "SELECT", "YES", null),
                         row("alice", "USER", "bob", "USER", "hive", "default", "alice_owned_table", "INSERT", "NO", null),
-                        row("hdfs", "USER", "role1", "ROLE", "hive", "default", "alice_owned_table", "SELECT", "NO", null)));
+                        row(userName, "USER", "role1", "ROLE", "hive", "default", "alice_owned_table", "SELECT", "NO", null)));
     }
 
     @Test(groups = {AUTHORIZATION, PROFILE_SPECIFIC_TESTS})

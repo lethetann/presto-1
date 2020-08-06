@@ -14,15 +14,17 @@
 package io.prestosql.plugin.hive.parquet;
 
 import io.airlift.configuration.Config;
+import io.airlift.configuration.ConfigDescription;
 import io.airlift.units.DataSize;
+import io.prestosql.parquet.writer.ParquetWriterOptions;
 import org.apache.parquet.hadoop.ParquetWriter;
-
-import static io.airlift.units.DataSize.Unit.BYTE;
 
 public class ParquetWriterConfig
 {
-    private DataSize blockSize = new DataSize(ParquetWriter.DEFAULT_BLOCK_SIZE, BYTE);
-    private DataSize pageSize = new DataSize(ParquetWriter.DEFAULT_PAGE_SIZE, BYTE);
+    private boolean parquetOptimizedWriterEnabled;
+
+    private DataSize blockSize = DataSize.ofBytes(ParquetWriter.DEFAULT_BLOCK_SIZE);
+    private DataSize pageSize = DataSize.ofBytes(ParquetWriter.DEFAULT_PAGE_SIZE);
 
     public DataSize getBlockSize()
     {
@@ -46,5 +48,26 @@ public class ParquetWriterConfig
     {
         this.pageSize = pageSize;
         return this;
+    }
+
+    public boolean isParquetOptimizedWriterEnabled()
+    {
+        return parquetOptimizedWriterEnabled;
+    }
+
+    @Config("hive.parquet.optimized-writer.enabled")
+    @ConfigDescription("Enable optimized Parquet writer")
+    public ParquetWriterConfig setParquetOptimizedWriterEnabled(boolean parquetOptimizedWriterEnabled)
+    {
+        this.parquetOptimizedWriterEnabled = parquetOptimizedWriterEnabled;
+        return this;
+    }
+
+    public ParquetWriterOptions toParquetWriterOptions()
+    {
+        return ParquetWriterOptions.builder()
+                .setMaxBlockSize(getBlockSize())
+                .setMaxPageSize(getPageSize())
+                .build();
     }
 }

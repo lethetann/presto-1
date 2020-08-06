@@ -64,7 +64,7 @@ public class QuerySessionSupplier
         this.defaultCatalog = requireNonNull(config.getDefaultCatalog(), "defaultCatalog is null");
         this.defaultSchema = requireNonNull(config.getDefaultSchema(), "defaultSchema is null");
 
-        checkArgument(defaultCatalog.isPresent() || !defaultSchema.isPresent(), "Default schema cannot be set if catalog is not set");
+        checkArgument(defaultCatalog.isPresent() || defaultSchema.isEmpty(), "Default schema cannot be set if catalog is not set");
     }
 
     @Override
@@ -72,6 +72,14 @@ public class QuerySessionSupplier
     {
         Identity identity = context.getIdentity();
         accessControl.checkCanSetUser(identity.getPrincipal(), identity.getUser());
+
+        // authenticated identity is not present for HTTP or if authentication is not setup
+        context.getAuthenticatedIdentity().ifPresent(authenticatedIdentity -> {
+            // only check impersonation if authenticated user is not the same as the explicitly set user
+            if (!authenticatedIdentity.getUser().equals(identity.getUser())) {
+                accessControl.checkCanImpersonateUser(authenticatedIdentity, identity.getUser());
+            }
+        });
 
         SessionBuilder sessionBuilder = Session.builder(sessionPropertyManager)
                 .setQueryId(queryId)

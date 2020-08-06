@@ -14,13 +14,17 @@
 package io.prestosql.plugin.base.security;
 
 import io.prestosql.spi.connector.CatalogSchemaName;
+import io.prestosql.spi.connector.CatalogSchemaRoutineName;
 import io.prestosql.spi.connector.CatalogSchemaTableName;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.SchemaTableName;
+import io.prestosql.spi.eventlistener.EventListener;
 import io.prestosql.spi.security.PrestoPrincipal;
 import io.prestosql.spi.security.Privilege;
 import io.prestosql.spi.security.SystemAccessControl;
 import io.prestosql.spi.security.SystemSecurityContext;
+import io.prestosql.spi.security.ViewExpression;
+import io.prestosql.spi.type.Type;
 
 import java.security.Principal;
 import java.util.List;
@@ -49,9 +53,51 @@ public abstract class ForwardingSystemAccessControl
     protected abstract SystemAccessControl delegate();
 
     @Override
+    public void checkCanImpersonateUser(SystemSecurityContext context, String userName)
+    {
+        delegate().checkCanImpersonateUser(context, userName);
+    }
+
+    @Override
     public void checkCanSetUser(Optional<Principal> principal, String userName)
     {
         delegate().checkCanSetUser(principal, userName);
+    }
+
+    @Override
+    public void checkCanReadSystemInformation(SystemSecurityContext context)
+    {
+        delegate().checkCanReadSystemInformation(context);
+    }
+
+    @Override
+    public void checkCanWriteSystemInformation(SystemSecurityContext context)
+    {
+        delegate().checkCanWriteSystemInformation(context);
+    }
+
+    @Override
+    public void checkCanExecuteQuery(SystemSecurityContext context)
+    {
+        delegate().checkCanExecuteQuery(context);
+    }
+
+    @Override
+    public void checkCanViewQueryOwnedBy(SystemSecurityContext context, String queryOwner)
+    {
+        delegate().checkCanViewQueryOwnedBy(context, queryOwner);
+    }
+
+    @Override
+    public Set<String> filterViewQueryOwnedBy(SystemSecurityContext context, Set<String> queryOwners)
+    {
+        return delegate().filterViewQueryOwnedBy(context, queryOwners);
+    }
+
+    @Override
+    public void checkCanKillQueryOwnedBy(SystemSecurityContext context, String queryOwner)
+    {
+        delegate().checkCanKillQueryOwnedBy(context, queryOwner);
     }
 
     @Override
@@ -91,6 +137,12 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanSetSchemaAuthorization(SystemSecurityContext context, CatalogSchemaName schema, PrestoPrincipal principal)
+    {
+        delegate().checkCanSetSchemaAuthorization(context, schema, principal);
+    }
+
+    @Override
     public void checkCanShowSchemas(SystemSecurityContext context, String catalogName)
     {
         delegate().checkCanShowSchemas(context, catalogName);
@@ -100,6 +152,18 @@ public abstract class ForwardingSystemAccessControl
     public Set<String> filterSchemas(SystemSecurityContext context, String catalogName, Set<String> schemaNames)
     {
         return delegate().filterSchemas(context, catalogName, schemaNames);
+    }
+
+    @Override
+    public void checkCanShowCreateSchema(SystemSecurityContext context, CatalogSchemaName schemaName)
+    {
+        delegate().checkCanShowCreateSchema(context, schemaName);
+    }
+
+    @Override
+    public void checkCanShowCreateTable(SystemSecurityContext context, CatalogSchemaTableName table)
+    {
+        delegate().checkCanShowCreateTable(context, table);
     }
 
     @Override
@@ -127,9 +191,15 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
-    public void checkCanShowTablesMetadata(SystemSecurityContext context, CatalogSchemaName schema)
+    public void checkCanSetColumnComment(SystemSecurityContext context, CatalogSchemaTableName table)
     {
-        delegate().checkCanShowTablesMetadata(context, schema);
+        delegate().checkCanSetColumnComment(context, table);
+    }
+
+    @Override
+    public void checkCanShowTables(SystemSecurityContext context, CatalogSchemaName schema)
+    {
+        delegate().checkCanShowTables(context, schema);
     }
 
     @Override
@@ -139,9 +209,9 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
-    public void checkCanShowColumnsMetadata(SystemSecurityContext context, CatalogSchemaTableName tableName)
+    public void checkCanShowColumns(SystemSecurityContext context, CatalogSchemaTableName tableName)
     {
-        delegate().checkCanShowColumnsMetadata(context, tableName);
+        delegate().checkCanShowColumns(context, tableName);
     }
 
     @Override
@@ -211,26 +281,62 @@ public abstract class ForwardingSystemAccessControl
     }
 
     @Override
+    public void checkCanGrantExecuteFunctionPrivilege(SystemSecurityContext context, String functionName, PrestoPrincipal grantee, boolean grantOption)
+    {
+        delegate().checkCanGrantExecuteFunctionPrivilege(context, functionName, grantee, grantOption);
+    }
+
+    @Override
     public void checkCanSetCatalogSessionProperty(SystemSecurityContext context, String catalogName, String propertyName)
     {
         delegate().checkCanSetCatalogSessionProperty(context, catalogName, propertyName);
     }
 
     @Override
-    public void checkCanGrantTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, PrestoPrincipal grantee, boolean withGrantOption)
+    public void checkCanGrantTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, PrestoPrincipal grantee, boolean grantOption)
     {
-        delegate().checkCanGrantTablePrivilege(context, privilege, table, grantee, withGrantOption);
+        delegate().checkCanGrantTablePrivilege(context, privilege, table, grantee, grantOption);
     }
 
     @Override
-    public void checkCanRevokeTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, PrestoPrincipal revokee, boolean grantOptionFor)
+    public void checkCanRevokeTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, PrestoPrincipal revokee, boolean grantOption)
     {
-        delegate().checkCanRevokeTablePrivilege(context, privilege, table, revokee, grantOptionFor);
+        delegate().checkCanRevokeTablePrivilege(context, privilege, table, revokee, grantOption);
     }
 
     @Override
     public void checkCanShowRoles(SystemSecurityContext context, String catalogName)
     {
         delegate().checkCanShowRoles(context, catalogName);
+    }
+
+    @Override
+    public void checkCanExecuteProcedure(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName procedure)
+    {
+        delegate().checkCanExecuteProcedure(systemSecurityContext, procedure);
+    }
+
+    @Override
+    public void checkCanExecuteFunction(SystemSecurityContext systemSecurityContext, String functionName)
+    {
+        delegate().checkCanExecuteFunction(systemSecurityContext, functionName);
+    }
+
+    @Override
+    public Iterable<EventListener> getEventListeners()
+    {
+        return delegate().getEventListeners();
+    }
+
+    @Override
+    public Optional<ViewExpression> getRowFilter(SystemSecurityContext context, CatalogSchemaTableName tableName)
+    {
+        return delegate().getRowFilter(context, tableName);
+    }
+
+    @Override
+    public Optional<ViewExpression> getColumnMask(SystemSecurityContext context, CatalogSchemaTableName tableName, String columnName, Type type)
+    {
+        return delegate().getColumnMask(context, tableName, columnName, type);
     }
 }

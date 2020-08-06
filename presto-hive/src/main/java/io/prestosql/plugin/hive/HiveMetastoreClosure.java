@@ -13,6 +13,7 @@
  */
 package io.prestosql.plugin.hive;
 
+import com.google.common.collect.ImmutableList;
 import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Database;
 import io.prestosql.plugin.hive.metastore.HiveMetastore;
@@ -23,6 +24,7 @@ import io.prestosql.plugin.hive.metastore.PartitionWithStatistics;
 import io.prestosql.plugin.hive.metastore.PrincipalPrivileges;
 import io.prestosql.plugin.hive.metastore.Table;
 import io.prestosql.spi.connector.SchemaTableName;
+import io.prestosql.spi.connector.TableNotFoundException;
 import io.prestosql.spi.security.RoleGrant;
 import io.prestosql.spi.statistics.ColumnStatisticType;
 import io.prestosql.spi.type.Type;
@@ -33,7 +35,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.Maps.immutableEntry;
+import static io.prestosql.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static java.util.Objects.requireNonNull;
 
 public class HiveMetastoreClosure
@@ -55,6 +60,12 @@ public class HiveMetastoreClosure
         return delegate.getAllDatabases();
     }
 
+    private Table getExistingTable(HiveIdentity identity, String databaseName, String tableName)
+    {
+        return delegate.getTable(identity, databaseName, tableName)
+                .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
+    }
+
     public Optional<Table> getTable(HiveIdentity identity, String databaseName, String tableName)
     {
         return delegate.getTable(identity, databaseName, tableName);
@@ -67,12 +78,14 @@ public class HiveMetastoreClosure
 
     public PartitionStatistics getTableStatistics(HiveIdentity identity, String databaseName, String tableName)
     {
-        return delegate.getTableStatistics(identity, databaseName, tableName);
+        return delegate.getTableStatistics(identity, getExistingTable(identity, databaseName, tableName));
     }
 
     public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, String databaseName, String tableName, Set<String> partitionNames)
     {
-        return delegate.getPartitionStatistics(identity, databaseName, tableName, partitionNames);
+        Table table = getExistingTable(identity, databaseName, tableName);
+        List<Partition> partitions = getExistingPartitionsByNames(identity, table, ImmutableList.copyOf(partitionNames));
+        return delegate.getPartitionStatistics(identity, table, partitions);
     }
 
     public void updateTableStatistics(HiveIdentity identity, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update)
@@ -82,7 +95,8 @@ public class HiveMetastoreClosure
 
     public void updatePartitionStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
     {
-        delegate.updatePartitionStatistics(identity, databaseName, tableName, partitionName, update);
+        Table table = getExistingTable(identity, databaseName, tableName);
+        delegate.updatePartitionStatistics(identity, table, partitionName, update);
     }
 
     public List<String> getAllTables(String databaseName)
@@ -115,6 +129,11 @@ public class HiveMetastoreClosure
         delegate.renameDatabase(identity, databaseName, newDatabaseName);
     }
 
+    public void setDatabaseOwner(HiveIdentity identity, String databaseName, HivePrincipal principal)
+    {
+        delegate.setDatabaseOwner(identity, databaseName, principal);
+    }
+
     public void createTable(HiveIdentity identity, Table table, PrincipalPrivileges principalPrivileges)
     {
         delegate.createTable(identity, table, principalPrivileges);
@@ -138,6 +157,11 @@ public class HiveMetastoreClosure
     public void commentTable(HiveIdentity identity, String databaseName, String tableName, Optional<String> comment)
     {
         delegate.commentTable(identity, databaseName, tableName, comment);
+    }
+
+    public void commentColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, Optional<String> comment)
+    {
+        delegate.commentColumn(identity, databaseName, tableName, columnName, comment);
     }
 
     public void addColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
@@ -169,6 +193,18 @@ public class HiveMetastoreClosure
     public Optional<List<String>> getPartitionNamesByParts(HiveIdentity identity, String databaseName, String tableName, List<String> parts)
     {
         return delegate.getPartitionNamesByParts(identity, databaseName, tableName, parts);
+    }
+
+    private List<Partition> getExistingPartitionsByNames(HiveIdentity identity, Table table, List<String> partitionNames)
+    {
+        Map<String, Partition> partitions = delegate.getPartitionsByNames(identity, table, partitionNames).entrySet().stream()
+                .map(entry -> immutableEntry(entry.getKey(), entry.getValue().orElseThrow(() ->
+                        new PartitionNotFoundException(table.getSchemaTableName(), extractPartitionValues(entry.getKey())))))
+                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
+
+        return partitionNames.stream()
+                .map(partitions::get)
+                .collect(toImmutableList());
     }
 
     public Map<String, Optional<Partition>> getPartitionsByNames(HiveIdentity identity, String databaseName, String tableName, List<String> partitionNames)
@@ -209,14 +245,19 @@ public class HiveMetastoreClosure
         return delegate.listRoles();
     }
 
-    public void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean withAdminOption, HivePrincipal grantor)
+    public void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor)
     {
-        delegate.grantRoles(roles, grantees, withAdminOption, grantor);
+        delegate.grantRoles(roles, grantees, adminOption, grantor);
     }
 
-    public void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOptionFor, HivePrincipal grantor)
+    public void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor)
     {
-        delegate.revokeRoles(roles, grantees, adminOptionFor, grantor);
+        delegate.revokeRoles(roles, grantees, adminOption, grantor);
+    }
+
+    public Set<RoleGrant> listGrantedPrincipals(String role)
+    {
+        return delegate.listGrantedPrincipals(role);
     }
 
     public Set<RoleGrant> listRoleGrants(HivePrincipal principal)

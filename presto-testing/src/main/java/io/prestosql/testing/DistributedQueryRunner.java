@@ -16,6 +16,7 @@ package io.prestosql.testing;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Closer;
+import com.google.inject.Module;
 import io.airlift.discovery.server.testing.TestingDiscoveryServer;
 import io.airlift.log.Logger;
 import io.airlift.testing.Assertions;
@@ -32,13 +33,14 @@ import io.prestosql.metadata.InternalNode;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.QualifiedObjectName;
 import io.prestosql.metadata.SessionPropertyManager;
+import io.prestosql.metadata.SqlFunction;
+import io.prestosql.plugin.base.security.AllowAllSystemAccessControl;
 import io.prestosql.server.BasicQueryInfo;
 import io.prestosql.server.testing.TestingPrestoServer;
 import io.prestosql.spi.Plugin;
 import io.prestosql.spi.QueryId;
 import io.prestosql.split.PageSourceManager;
 import io.prestosql.split.SplitManager;
-import io.prestosql.sql.parser.SqlParserOptions;
 import io.prestosql.sql.planner.NodePartitioningManager;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.transaction.TransactionManager;
@@ -61,6 +63,7 @@ import java.util.function.Function;
 
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static com.google.inject.util.Modules.EMPTY_MODULE;
 import static io.airlift.units.Duration.nanosSince;
 import static io.prestosql.testing.AbstractTestQueries.TEST_CATALOG_PROPERTIES;
 import static io.prestosql.testing.AbstractTestQueries.TEST_SYSTEM_PROPERTIES;
@@ -75,31 +78,16 @@ public class DistributedQueryRunner
 {
     private static final Logger log = Logger.get(DistributedQueryRunner.class);
     private static final String ENVIRONMENT = "testing";
-    private static final SqlParserOptions DEFAULT_SQL_PARSER_OPTIONS = new SqlParserOptions();
 
     private final TestingDiscoveryServer discoveryServer;
     private final TestingPrestoServer coordinator;
-    private final List<TestingPrestoServer> servers;
+    private List<TestingPrestoServer> servers;
 
     private final Closer closer = Closer.create();
 
     private final TestingPrestoClient prestoClient;
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
-
-    @Deprecated
-    public DistributedQueryRunner(Session defaultSession, int nodeCount)
-            throws Exception
-    {
-        this(defaultSession, nodeCount, ImmutableMap.of());
-    }
-
-    @Deprecated
-    public DistributedQueryRunner(Session defaultSession, int nodeCount, Map<String, String> extraProperties)
-            throws Exception
-    {
-        this(defaultSession, nodeCount, extraProperties, ImmutableMap.of(), DEFAULT_SQL_PARSER_OPTIONS, ENVIRONMENT, Optional.empty());
-    }
 
     public static Builder builder(Session defaultSession)
     {
@@ -111,9 +99,11 @@ public class DistributedQueryRunner
             int nodeCount,
             Map<String, String> extraProperties,
             Map<String, String> coordinatorProperties,
-            SqlParserOptions parserOptions,
             String environment,
-            Optional<Path> baseDataDir)
+            Module additionalModule,
+            Optional<Path> baseDataDir,
+            String systemAccessControlName,
+            Map<String, String> systemAccessControlProperties)
             throws Exception
     {
         requireNonNull(defaultSession, "defaultSession is null");
@@ -127,14 +117,30 @@ public class DistributedQueryRunner
             ImmutableList.Builder<TestingPrestoServer> servers = ImmutableList.builder();
 
             for (int i = 1; i < nodeCount; i++) {
-                TestingPrestoServer worker = closer.register(createTestingPrestoServer(discoveryServer.getBaseUrl(), false, extraProperties, parserOptions, environment, baseDataDir));
+                TestingPrestoServer worker = closer.register(createTestingPrestoServer(
+                        discoveryServer.getBaseUrl(),
+                        false,
+                        extraProperties,
+                        environment,
+                        additionalModule,
+                        baseDataDir,
+                        systemAccessControlName,
+                        systemAccessControlProperties));
                 servers.add(worker);
             }
 
             Map<String, String> extraCoordinatorProperties = new HashMap<>();
             extraCoordinatorProperties.putAll(extraProperties);
             extraCoordinatorProperties.putAll(coordinatorProperties);
-            coordinator = closer.register(createTestingPrestoServer(discoveryServer.getBaseUrl(), true, extraCoordinatorProperties, parserOptions, environment, baseDataDir));
+            coordinator = closer.register(createTestingPrestoServer(
+                    discoveryServer.getBaseUrl(),
+                    true,
+                    extraCoordinatorProperties,
+                    environment,
+                    additionalModule,
+                    baseDataDir,
+                    systemAccessControlName,
+                    systemAccessControlProperties));
             servers.add(coordinator);
 
             this.servers = servers.build();
@@ -152,14 +158,9 @@ public class DistributedQueryRunner
         defaultSession = defaultSession.toSessionRepresentation().toSession(coordinator.getMetadata().getSessionPropertyManager(), defaultSession.getIdentity().getExtraCredentials());
         this.prestoClient = closer.register(new TestingPrestoClient(coordinator, defaultSession));
 
-        long start = System.nanoTime();
-        while (!allNodesGloballyVisible()) {
-            Assertions.assertLessThan(nanosSince(start), new Duration(10, SECONDS));
-            MILLISECONDS.sleep(10);
-        }
-        log.info("Announced servers in %s", nanosSince(start).convertToMostSuccinctTimeUnit());
+        waitForAllNodesGloballyVisible();
 
-        start = System.nanoTime();
+        long start = System.nanoTime();
         for (TestingPrestoServer server : servers) {
             server.getMetadata().addFunctions(AbstractTestQueries.CUSTOM_FUNCTIONS);
         }
@@ -167,16 +168,19 @@ public class DistributedQueryRunner
 
         for (TestingPrestoServer server : servers) {
             // add bogus catalog for testing procedures and session properties
-            Catalog bogusTestingCatalog = createBogusTestingCatalog(TESTING_CATALOG);
-            server.getCatalogManager().registerCatalog(bogusTestingCatalog);
-
-            SessionPropertyManager sessionPropertyManager = server.getMetadata().getSessionPropertyManager();
-            sessionPropertyManager.addSystemSessionProperties(TEST_SYSTEM_PROPERTIES);
-            sessionPropertyManager.addConnectorSessionProperties(bogusTestingCatalog.getConnectorCatalogName(), TEST_CATALOG_PROPERTIES);
+            addTestingCatalog(server);
         }
     }
 
-    private static TestingPrestoServer createTestingPrestoServer(URI discoveryUri, boolean coordinator, Map<String, String> extraProperties, SqlParserOptions parserOptions, String environment, Optional<Path> baseDataDir)
+    private static TestingPrestoServer createTestingPrestoServer(
+            URI discoveryUri,
+            boolean coordinator,
+            Map<String, String> extraProperties,
+            String environment,
+            Module additionalModule,
+            Optional<Path> baseDataDir,
+            String systemAccessControlName,
+            Map<String, String> systemAccessControlProperties)
     {
         long start = System.nanoTime();
         ImmutableMap.Builder<String, String> propertiesBuilder = ImmutableMap.<String, String>builder()
@@ -188,17 +192,70 @@ public class DistributedQueryRunner
         if (coordinator) {
             propertiesBuilder.put("node-scheduler.include-coordinator", "true");
             propertiesBuilder.put("join-distribution-type", "PARTITIONED");
-            propertiesBuilder.put("iterative-optimizer-enabled", "true");
         }
         HashMap<String, String> properties = new HashMap<>(propertiesBuilder.build());
         properties.putAll(extraProperties);
 
-        TestingPrestoServer server = new TestingPrestoServer(coordinator, properties, environment, discoveryUri, parserOptions, ImmutableList.of(), baseDataDir);
+        TestingPrestoServer server = TestingPrestoServer.builder()
+                .setCoordinator(coordinator)
+                .setProperties(properties)
+                .setEnvironment(environment)
+                .setDiscoveryUri(discoveryUri)
+                .setAdditionalModule(additionalModule)
+                .setBaseDataDir(baseDataDir)
+                .setSystemAccessControl(systemAccessControlName, systemAccessControlProperties)
+                .build();
 
         String nodeRole = coordinator ? "coordinator" : "worker";
         log.info("Created %s TestingPrestoServer in %s: %s", nodeRole, nanosSince(start).convertToMostSuccinctTimeUnit(), server.getBaseUrl());
 
         return server;
+    }
+
+    public void addServers(int nodeCount)
+            throws Exception
+    {
+        ImmutableList.Builder<TestingPrestoServer> serverBuilder = new ImmutableList.Builder<TestingPrestoServer>()
+                .addAll(servers);
+        for (int i = 0; i < nodeCount; i++) {
+            TestingPrestoServer server = closer.register(createTestingPrestoServer(
+                    discoveryServer.getBaseUrl(),
+                    false,
+                    ImmutableMap.of(),
+                    ENVIRONMENT,
+                    EMPTY_MODULE,
+                    Optional.empty(),
+                    AllowAllSystemAccessControl.NAME,
+                    ImmutableMap.of()));
+            serverBuilder.add(server);
+            // add functions
+            server.getMetadata().addFunctions(AbstractTestQueries.CUSTOM_FUNCTIONS);
+            addTestingCatalog(server);
+        }
+        servers = serverBuilder.build();
+        waitForAllNodesGloballyVisible();
+    }
+
+    private void waitForAllNodesGloballyVisible()
+            throws InterruptedException
+    {
+        long start = System.nanoTime();
+        while (!allNodesGloballyVisible()) {
+            Assertions.assertLessThan(nanosSince(start), new Duration(10, SECONDS));
+            MILLISECONDS.sleep(10);
+        }
+        log.info("Announced servers in %s", nanosSince(start).convertToMostSuccinctTimeUnit());
+    }
+
+    private void addTestingCatalog(TestingPrestoServer server)
+    {
+        // add bogus catalog for testing procedures and session properties
+        Catalog bogusTestingCatalog = createBogusTestingCatalog(TESTING_CATALOG);
+        server.getCatalogManager().registerCatalog(bogusTestingCatalog);
+
+        SessionPropertyManager sessionPropertyManager = server.getMetadata().getSessionPropertyManager();
+        sessionPropertyManager.addSystemSessionProperties(TEST_SYSTEM_PROPERTIES);
+        sessionPropertyManager.addConnectorSessionProperties(bogusTestingCatalog.getConnectorCatalogName(), TEST_CATALOG_PROPERTIES);
     }
 
     private boolean allNodesGloballyVisible()
@@ -290,6 +347,12 @@ public class DistributedQueryRunner
             server.installPlugin(plugin);
         }
         log.info("Installed plugin %s in %s", plugin.getClass().getSimpleName(), nanosSince(start).convertToMostSuccinctTimeUnit());
+    }
+
+    @Override
+    public void addFunctions(List<? extends SqlFunction> functions)
+    {
+        servers.forEach(server -> server.getMetadata().addFunctions(functions));
     }
 
     public void createCatalog(String catalogName, String connectorName)
@@ -457,12 +520,14 @@ public class DistributedQueryRunner
     public static class Builder
     {
         private Session defaultSession;
-        private int nodeCount = 4;
+        private int nodeCount = 3;
         private Map<String, String> extraProperties = ImmutableMap.of();
         private Map<String, String> coordinatorProperties = ImmutableMap.of();
-        private SqlParserOptions parserOptions = DEFAULT_SQL_PARSER_OPTIONS;
         private String environment = ENVIRONMENT;
+        private Module additionalModule = EMPTY_MODULE;
         private Optional<Path> baseDataDir = Optional.empty();
+        private String systemAccessControlName = AllowAllSystemAccessControl.NAME;
+        private Map<String, String> systemAccessControlProperties = ImmutableMap.of();
 
         protected Builder(Session defaultSession)
         {
@@ -514,15 +579,15 @@ public class DistributedQueryRunner
             return setCoordinatorProperties(ImmutableMap.of(key, value));
         }
 
-        public Builder setParserOptions(SqlParserOptions parserOptions)
-        {
-            this.parserOptions = parserOptions;
-            return this;
-        }
-
         public Builder setEnvironment(String environment)
         {
             this.environment = environment;
+            return this;
+        }
+
+        public Builder setAdditionalModule(Module additionalModule)
+        {
+            this.additionalModule = requireNonNull(additionalModule, "additionalModules is null");
             return this;
         }
 
@@ -532,10 +597,27 @@ public class DistributedQueryRunner
             return this;
         }
 
+        @SuppressWarnings("unused")
+        public Builder setSystemAccessControl(String name, Map<String, String> properties)
+        {
+            this.systemAccessControlName = requireNonNull(name, "name is null");
+            this.systemAccessControlProperties = ImmutableMap.copyOf(requireNonNull(properties, "properties is null"));
+            return this;
+        }
+
         public DistributedQueryRunner build()
                 throws Exception
         {
-            return new DistributedQueryRunner(defaultSession, nodeCount, extraProperties, coordinatorProperties, parserOptions, environment, baseDataDir);
+            return new DistributedQueryRunner(
+                    defaultSession,
+                    nodeCount,
+                    extraProperties,
+                    coordinatorProperties,
+                    environment,
+                    additionalModule,
+                    baseDataDir,
+                    systemAccessControlName,
+                    systemAccessControlProperties);
         }
     }
 }

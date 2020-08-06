@@ -14,70 +14,47 @@
 package io.prestosql.plugin.jdbc;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
-import static io.prestosql.plugin.jdbc.WriteNullFunction.DEFAULT_WRITE_NULL_FUNCTION;
 import static java.util.Objects.requireNonNull;
 
 public final class WriteMapping
 {
     public static WriteMapping booleanMapping(String dataType, BooleanWriteFunction writeFunction)
     {
-        return booleanMapping(dataType, writeFunction, DEFAULT_WRITE_NULL_FUNCTION);
-    }
-
-    public static WriteMapping booleanMapping(String dataType, BooleanWriteFunction writeFunction, WriteNullFunction writeNullFunction)
-    {
-        return new WriteMapping(dataType, writeFunction, writeNullFunction);
+        return new WriteMapping(dataType, writeFunction);
     }
 
     public static WriteMapping longMapping(String dataType, LongWriteFunction writeFunction)
     {
-        return longMapping(dataType, writeFunction, DEFAULT_WRITE_NULL_FUNCTION);
-    }
-
-    public static WriteMapping longMapping(String dataType, LongWriteFunction writeFunction, WriteNullFunction writeNullFunction)
-    {
-        return new WriteMapping(dataType, writeFunction, writeNullFunction);
+        return new WriteMapping(dataType, writeFunction);
     }
 
     public static WriteMapping doubleMapping(String dataType, DoubleWriteFunction writeFunction)
     {
-        return doubleMapping(dataType, writeFunction, DEFAULT_WRITE_NULL_FUNCTION);
-    }
-
-    public static WriteMapping doubleMapping(String dataType, DoubleWriteFunction writeFunction, WriteNullFunction writeNullFunction)
-    {
-        return new WriteMapping(dataType, writeFunction, writeNullFunction);
+        return new WriteMapping(dataType, writeFunction);
     }
 
     public static WriteMapping sliceMapping(String dataType, SliceWriteFunction writeFunction)
     {
-        return sliceMapping(dataType, writeFunction, DEFAULT_WRITE_NULL_FUNCTION);
+        return new WriteMapping(dataType, writeFunction);
     }
 
-    public static WriteMapping sliceMapping(String dataType, SliceWriteFunction writeFunction, WriteNullFunction writeNullFunction)
+    public static <T> WriteMapping objectMapping(String dataType, Class<T> javaType, ObjectWriteFunction.ObjectWriteFunctionImplementation<T> writeFunction)
     {
-        return new WriteMapping(dataType, writeFunction, writeNullFunction);
+        return objectMapping(dataType, ObjectWriteFunction.of(javaType, writeFunction));
     }
 
-    public static WriteMapping blockMapping(String dataType, BlockWriteFunction writeFunction)
+    public static WriteMapping objectMapping(String dataType, ObjectWriteFunction writeFunction)
     {
-        return blockMapping(dataType, writeFunction, DEFAULT_WRITE_NULL_FUNCTION);
-    }
-
-    public static WriteMapping blockMapping(String dataType, BlockWriteFunction writeFunction, WriteNullFunction defaultWriteNullFunction)
-    {
-        return new WriteMapping(dataType, writeFunction, defaultWriteNullFunction);
+        return new WriteMapping(dataType, writeFunction);
     }
 
     private final String dataType;
     private final WriteFunction writeFunction;
-    private final WriteNullFunction writeNullFunction;
 
-    private WriteMapping(String dataType, WriteFunction writeFunction, WriteNullFunction writeNullFunction)
+    private WriteMapping(String dataType, WriteFunction writeFunction)
     {
         this.dataType = requireNonNull(dataType, "dataType is null");
         this.writeFunction = requireNonNull(writeFunction, "writeFunction is null");
-        this.writeNullFunction = requireNonNull(writeNullFunction, "writeNullFunction is null");
     }
 
     /**
@@ -91,11 +68,6 @@ public final class WriteMapping
     public WriteFunction getWriteFunction()
     {
         return writeFunction;
-    }
-
-    public WriteNullFunction getWriteNullFunction()
-    {
-        return writeNullFunction;
     }
 
     @Override

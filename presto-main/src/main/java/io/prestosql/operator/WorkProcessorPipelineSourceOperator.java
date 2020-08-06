@@ -42,7 +42,6 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.prestosql.operator.BlockedReason.WAITING_FOR_MEMORY;
 import static io.prestosql.operator.PageUtils.recordMaterializedBytes;
@@ -202,9 +201,12 @@ public class WorkProcessorPipelineSourceOperator
 
             long deltaReadTimeNanos = deltaAndSet(context.readTimeNanos, sourceOperator.getReadTime().roundTo(NANOSECONDS));
 
+            long deltaDynamicFilterSplitsProcessed = deltaAndSet(context.dynamicFilterSplitsProcessed, sourceOperator.getDynamicFilterSplitsProcessed());
+
             operatorContext.recordPhysicalInputWithTiming(deltaPhysicalInputDataSize, deltaPhysicalInputPositions, deltaReadTimeNanos);
             operatorContext.recordNetworkInput(deltaInternalNetworkInputDataSize, deltaInternalNetworkInputPositions);
             operatorContext.recordProcessedInput(deltaInputDataSize, deltaInputPositions);
+            operatorContext.recordDynamicFilterSplitProcessed(deltaDynamicFilterSplitsProcessed);
         }
 
         if (state.getType() == FINISHED) {
@@ -304,7 +306,9 @@ public class WorkProcessorPipelineSourceOperator
                         succinctBytes(context.outputDataSize.get()),
                         context.outputPositions.get(),
 
-                        new DataSize(0, BYTE),
+                        context.dynamicFilterSplitsProcessed.get(),
+
+                        DataSize.ofBytes(0),
 
                         new Duration(context.blockedWallNanos.get(), NANOSECONDS),
 
@@ -320,7 +324,7 @@ public class WorkProcessorPipelineSourceOperator
                         succinctBytes(context.peakSystemMemoryReservation.get()),
                         succinctBytes(context.peakRevocableMemoryReservation.get()),
                         succinctBytes(context.peakTotalMemoryReservation.get()),
-                        new DataSize(0, BYTE),
+                        DataSize.ofBytes(0),
                         operatorContext.isWaitingForMemory().isDone() ? Optional.empty() : Optional.of(WAITING_FOR_MEMORY),
                         getOperatorInfo(context)))
                 .collect(toImmutableList());
@@ -587,7 +591,6 @@ public class WorkProcessorPipelineSourceOperator
         final Runnable allocationListener;
 
         InternalAggregatedMemoryContext(AggregatedMemoryContext delegate, Runnable allocationListener)
-
         {
             this.delegate = requireNonNull(delegate, "delegate is null");
             this.allocationListener = requireNonNull(allocationListener, "allocationListener is null");
@@ -641,6 +644,8 @@ public class WorkProcessorPipelineSourceOperator
 
         final AtomicLong outputDataSize = new AtomicLong();
         final AtomicLong outputPositions = new AtomicLong();
+
+        final AtomicLong dynamicFilterSplitsProcessed = new AtomicLong();
 
         final AtomicLong peakUserMemoryReservation = new AtomicLong();
         final AtomicLong peakSystemMemoryReservation = new AtomicLong();

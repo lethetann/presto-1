@@ -28,6 +28,7 @@ import io.prestosql.spi.type.VarcharType;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 import java.util.function.Function;
@@ -37,6 +38,7 @@ import static io.prestosql.spi.type.CharType.createCharType;
 import static io.prestosql.spi.type.Chars.padSpaces;
 import static io.prestosql.spi.type.DateType.DATE;
 import static io.prestosql.spi.type.DecimalType.createDecimalType;
+import static io.prestosql.spi.type.TimeType.TIME;
 import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
 import static io.prestosql.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.prestosql.type.JsonType.JSON;
@@ -49,6 +51,7 @@ public class DataType<T>
     private final String insertType;
     private final Type prestoResultType;
     private final Function<T, String> toLiteral;
+    private final Function<T, String> toPrestoLiteral;
     private final Function<T, ?> toPrestoQueryResult;
 
     public static DataType<Boolean> booleanDataType()
@@ -76,14 +79,32 @@ public class DataType<T>
         return dataType("tinyint", TinyintType.TINYINT);
     }
 
-    public static DataType<Double> doubleDataType()
-    {
-        return dataType("double", DoubleType.DOUBLE);
-    }
-
     public static DataType<Float> realDataType()
     {
-        return dataType("real", RealType.REAL);
+        return dataType("real", RealType.REAL,
+                value -> {
+                    if (Float.isFinite(value)) {
+                        return value.toString();
+                    }
+                    if (Float.isNaN(value)) {
+                        return "nan()";
+                    }
+                    return format("%sinfinity()", value > 0 ? "+" : "-");
+                });
+    }
+
+    public static DataType<Double> doubleDataType()
+    {
+        return dataType("double", DoubleType.DOUBLE,
+                value -> {
+                    if (Double.isFinite(value)) {
+                        return value.toString();
+                    }
+                    if (Double.isNaN(value)) {
+                        return "nan()";
+                    }
+                    return format("%sinfinity()", value > 0 ? "+" : "-");
+                });
     }
 
     public static DataType<String> varcharDataType(int size)
@@ -155,6 +176,15 @@ public class DataType<T>
                 identity());
     }
 
+    public static DataType<LocalTime> timeDataType()
+    {
+        return dataType(
+                "time",
+                TIME,
+                DateTimeFormatter.ofPattern("'TIME '''HH:mm:ss.SSS''")::format,
+                identity());
+    }
+
     public static DataType<LocalDateTime> timestampDataType()
     {
         return dataType(
@@ -188,19 +218,30 @@ public class DataType<T>
 
     private static <T> DataType<T> dataType(String insertType, Type prestoResultType)
     {
-        return new DataType<>(insertType, prestoResultType, Object::toString, Function.identity());
+        return new DataType<>(insertType, prestoResultType, Object::toString, Object::toString, Function.identity());
+    }
+
+    public static <T> DataType<T> dataType(String insertType, Type prestoResultType, Function<T, String> toLiteral)
+    {
+        return new DataType<>(insertType, prestoResultType, toLiteral, toLiteral, Function.identity());
     }
 
     public static <T> DataType<T> dataType(String insertType, Type prestoResultType, Function<T, String> toLiteral, Function<T, ?> toPrestoQueryResult)
     {
-        return new DataType<>(insertType, prestoResultType, toLiteral, toPrestoQueryResult);
+        return new DataType<>(insertType, prestoResultType, toLiteral, toLiteral, toPrestoQueryResult);
     }
 
-    private DataType(String insertType, Type prestoResultType, Function<T, String> toLiteral, Function<T, ?> toPrestoQueryResult)
+    public static <T> DataType<T> dataType(String insertType, Type prestoResultType, Function<T, String> toLiteral, Function<T, String> toPrestoLiteral, Function<T, ?> toPrestoQueryResult)
+    {
+        return new DataType<>(insertType, prestoResultType, toLiteral, toPrestoLiteral, toPrestoQueryResult);
+    }
+
+    private DataType(String insertType, Type prestoResultType, Function<T, String> toLiteral, Function<T, String> toPrestoLiteral, Function<T, ?> toPrestoQueryResult)
     {
         this.insertType = insertType;
         this.prestoResultType = prestoResultType;
         this.toLiteral = toLiteral;
+        this.toPrestoLiteral = toPrestoLiteral;
         this.toPrestoQueryResult = toPrestoQueryResult;
     }
 
@@ -210,6 +251,14 @@ public class DataType<T>
             return "NULL";
         }
         return toLiteral.apply(inputValue);
+    }
+
+    public String toPrestoLiteral(T inputValue)
+    {
+        if (inputValue == null) {
+            return "NULL";
+        }
+        return toPrestoLiteral.apply(inputValue);
     }
 
     public Object toPrestoQueryResult(T inputValue)

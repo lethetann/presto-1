@@ -14,12 +14,14 @@
 package io.prestosql.plugin.hive.util;
 
 import com.google.common.collect.ImmutableList;
+import io.airlift.units.DataSize;
+import io.prestosql.plugin.hive.AcidInfo;
 import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HivePartitionKey;
 import io.prestosql.plugin.hive.HiveSplit.BucketConversion;
-import io.prestosql.plugin.hive.HiveTypeName;
 import io.prestosql.plugin.hive.InternalHiveSplit;
 import io.prestosql.plugin.hive.InternalHiveSplit.InternalHiveBlock;
+import io.prestosql.plugin.hive.TableToPartitionMapping;
 import io.prestosql.plugin.hive.s3select.S3SelectPushdown;
 import io.prestosql.spi.HostAddress;
 import io.prestosql.spi.predicate.Domain;
@@ -41,6 +43,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
+import java.util.function.BooleanSupplier;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -57,8 +60,10 @@ public class InternalHiveSplitFactory
     private final Properties schema;
     private final List<HivePartitionKey> partitionKeys;
     private final Optional<Domain> pathDomain;
-    private final Map<Integer, HiveTypeName> columnCoercions;
+    private final TableToPartitionMapping tableToPartitionMapping;
+    private final BooleanSupplier partitionMatchSupplier;
     private final Optional<BucketConversion> bucketConversion;
+    private final long minimumTargetSplitSizeInBytes;
     private final boolean forceLocalScheduling;
     private final boolean s3SelectPushdownEnabled;
 
@@ -69,8 +74,10 @@ public class InternalHiveSplitFactory
             Properties schema,
             List<HivePartitionKey> partitionKeys,
             TupleDomain<HiveColumnHandle> effectivePredicate,
-            Map<Integer, HiveTypeName> columnCoercions,
+            BooleanSupplier partitionMatchSupplier,
+            TableToPartitionMapping tableToPartitionMapping,
             Optional<BucketConversion> bucketConversion,
+            DataSize minimumTargetSplitSize,
             boolean forceLocalScheduling,
             boolean s3SelectPushdownEnabled)
     {
@@ -80,10 +87,13 @@ public class InternalHiveSplitFactory
         this.schema = requireNonNull(schema, "schema is null");
         this.partitionKeys = requireNonNull(partitionKeys, "partitionKeys is null");
         pathDomain = getPathDomain(requireNonNull(effectivePredicate, "effectivePredicate is null"));
-        this.columnCoercions = requireNonNull(columnCoercions, "columnCoercions is null");
+        this.partitionMatchSupplier = requireNonNull(partitionMatchSupplier, "partitionMatchSupplier is null");
+        this.tableToPartitionMapping = requireNonNull(tableToPartitionMapping, "tableToPartitionMapping is null");
         this.bucketConversion = requireNonNull(bucketConversion, "bucketConversion is null");
         this.forceLocalScheduling = forceLocalScheduling;
         this.s3SelectPushdownEnabled = s3SelectPushdownEnabled;
+        this.minimumTargetSplitSizeInBytes = requireNonNull(minimumTargetSplitSize, "minimumTargetSplitSize is null").toBytes();
+        checkArgument(minimumTargetSplitSizeInBytes > 0, "minimumTargetSplitSize must be > 0, found: %s", minimumTargetSplitSize);
     }
 
     public String getPartitionName()
@@ -91,19 +101,11 @@ public class InternalHiveSplitFactory
         return partitionName;
     }
 
-    public Optional<InternalHiveSplit> createInternalHiveSplit(LocatedFileStatus status, boolean splittable)
+    public Optional<InternalHiveSplit> createInternalHiveSplit(LocatedFileStatus status, OptionalInt bucketNumber, boolean splittable, Optional<AcidInfo> acidInfo)
     {
-        return createInternalHiveSplit(status, OptionalInt.empty(), splittable);
-    }
-
-    public Optional<InternalHiveSplit> createInternalHiveSplit(LocatedFileStatus status, int bucketNumber)
-    {
-        return createInternalHiveSplit(status, OptionalInt.of(bucketNumber), false);
-    }
-
-    private Optional<InternalHiveSplit> createInternalHiveSplit(LocatedFileStatus status, OptionalInt bucketNumber, boolean splittable)
-    {
-        splittable = splittable && isSplittable(inputFormat, fileSystem, status.getPath());
+        splittable = splittable &&
+                status.getLen() > minimumTargetSplitSizeInBytes &&
+                isSplittable(inputFormat, fileSystem, status.getPath());
         return createInternalHiveSplit(
                 status.getPath(),
                 status.getBlockLocations(),
@@ -112,7 +114,8 @@ public class InternalHiveSplitFactory
                 status.getLen(),
                 status.getModificationTime(),
                 bucketNumber,
-                splittable);
+                splittable,
+                acidInfo);
     }
 
     public Optional<InternalHiveSplit> createInternalHiveSplit(FileSplit split)
@@ -127,7 +130,8 @@ public class InternalHiveSplitFactory
                 file.getLen(),
                 file.getModificationTime(),
                 OptionalInt.empty(),
-                false);
+                false,
+                Optional.empty());
     }
 
     private Optional<InternalHiveSplit> createInternalHiveSplit(
@@ -138,10 +142,17 @@ public class InternalHiveSplitFactory
             long fileSize,
             long fileModificationTime,
             OptionalInt bucketNumber,
-            boolean splittable)
+            boolean splittable,
+            Optional<AcidInfo> acidInfo)
     {
         String pathString = path.toString();
         if (!pathMatchesPredicate(pathDomain, pathString)) {
+            return Optional.empty();
+        }
+
+        // Dynamic filter may not have been ready when partition was loaded in BackgroundHiveSplitLoader,
+        // but it might be ready when splits are enumerated lazily.
+        if (!partitionMatchSupplier.getAsBoolean()) {
             return Optional.empty();
         }
 
@@ -192,9 +203,10 @@ public class InternalHiveSplitFactory
                 bucketNumber,
                 splittable,
                 forceLocalScheduling && allBlocksHaveAddress(blocks),
-                columnCoercions,
+                tableToPartitionMapping,
                 bucketConversion,
-                s3SelectPushdownEnabled && S3SelectPushdown.isCompressionCodecSupported(inputFormat, path)));
+                s3SelectPushdownEnabled && S3SelectPushdown.isCompressionCodecSupported(inputFormat, path),
+                acidInfo));
     }
 
     private static void checkBlocks(List<InternalHiveBlock> blocks, long start, long length)

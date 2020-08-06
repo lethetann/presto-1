@@ -37,6 +37,7 @@ public class MongoClientConfig
     private static final Splitter PORT_SPLITTER = Splitter.on(':').trimResults().omitEmptyStrings();
 
     private String schemaCollection = "_schema";
+    private boolean caseInsensitiveNameMatching;
     private List<ServerAddress> seeds = ImmutableList.of();
     private List<MongoCredential> credentials = ImmutableList.of();
 
@@ -45,6 +46,7 @@ public class MongoClientConfig
     private int maxWaitTime = 120_000;
     private int connectionTimeout = 10_000;
     private int socketTimeout;
+    private int maxConnectionIdleTime;
     private boolean socketKeepAlive;
     private boolean sslEnabled;
 
@@ -66,6 +68,18 @@ public class MongoClientConfig
     public MongoClientConfig setSchemaCollection(String schemaCollection)
     {
         this.schemaCollection = schemaCollection;
+        return this;
+    }
+
+    public boolean isCaseInsensitiveNameMatching()
+    {
+        return caseInsensitiveNameMatching;
+    }
+
+    @Config("mongodb.case-insensitive-name-matching")
+    public MongoClientConfig setCaseInsensitiveNameMatching(boolean caseInsensitiveNameMatching)
+    {
+        this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
         return this;
     }
 
@@ -127,18 +141,18 @@ public class MongoClientConfig
     private List<MongoCredential> buildCredentials(Iterable<String> userPasses)
     {
         ImmutableList.Builder<MongoCredential> builder = ImmutableList.builder();
-        for (String userPassCollection : userPasses) {
-            int lastIndex = userPassCollection.lastIndexOf('@');
-            checkArgument(lastIndex > 0, "Invalid Credential format. Requires user:password@collection");
-            String userPass = userPassCollection.substring(0, lastIndex);
-            String collection = userPassCollection.substring(lastIndex + 1);
+        for (String userPassDatabase : userPasses) {
+            int lastIndex = userPassDatabase.lastIndexOf('@');
+            checkArgument(lastIndex > 0, "Invalid Credential format. Requires user:password@database");
+            String userPass = userPassDatabase.substring(0, lastIndex);
+            String database = userPassDatabase.substring(lastIndex + 1);
 
             int firstIndex = userPass.indexOf(':');
-            checkArgument(firstIndex > 0, "Invalid Credential format. Requires user:password@collection");
+            checkArgument(firstIndex > 0, "Invalid Credential format. Requires user:password@database");
             String user = userPass.substring(0, firstIndex);
             String password = userPass.substring(firstIndex + 1);
 
-            builder.add(createCredential(user, collection, password.toCharArray()));
+            builder.add(createCredential(user, database, password.toCharArray()));
         }
         return builder.build();
     }
@@ -292,6 +306,19 @@ public class MongoClientConfig
     public MongoClientConfig setSslEnabled(boolean sslEnabled)
     {
         this.sslEnabled = sslEnabled;
+        return this;
+    }
+
+    @Min(0)
+    public int getMaxConnectionIdleTime()
+    {
+        return maxConnectionIdleTime;
+    }
+
+    @Config("mongodb.max-connection-idle-time")
+    public MongoClientConfig setMaxConnectionIdleTime(int maxConnectionIdleTime)
+    {
+        this.maxConnectionIdleTime = maxConnectionIdleTime;
         return this;
     }
 }

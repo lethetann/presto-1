@@ -17,6 +17,7 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.compress.lzo.LzoCodec;
 import io.airlift.compress.lzo.LzopCodec;
 import io.airlift.json.JsonCodec;
@@ -26,6 +27,8 @@ import io.airlift.slice.Slice;
 import io.airlift.slice.SliceUtf8;
 import io.airlift.slice.Slices;
 import io.prestosql.hadoop.TextLineLengthLimitExceededException;
+import io.prestosql.orc.OrcWriterOptions;
+import io.prestosql.plugin.base.CatalogName;
 import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HivePartitionKey;
 import io.prestosql.plugin.hive.HiveType;
@@ -35,6 +38,7 @@ import io.prestosql.plugin.hive.metastore.Table;
 import io.prestosql.spi.ErrorCodeSupplier;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorViewDefinition;
+import io.prestosql.spi.connector.ConnectorViewDefinition.ViewColumn;
 import io.prestosql.spi.connector.RecordCursor;
 import io.prestosql.spi.predicate.NullableValue;
 import io.prestosql.spi.type.ArrayType;
@@ -45,6 +49,7 @@ import io.prestosql.spi.type.Decimals;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.RowType;
 import io.prestosql.spi.type.Type;
+import io.prestosql.spi.type.TypeId;
 import io.prestosql.spi.type.TypeManager;
 import io.prestosql.spi.type.VarbinaryType;
 import io.prestosql.spi.type.VarcharType;
@@ -55,11 +60,13 @@ import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.io.IOConstants;
 import org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat;
+import org.apache.hadoop.hive.ql.io.avro.AvroContainerInputFormat;
 import org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat;
 import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.SerDeException;
+import org.apache.hadoop.hive.serde2.avro.AvroSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
@@ -106,12 +113,15 @@ import static com.google.common.collect.Lists.newArrayList;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.prestosql.plugin.hive.HiveColumnHandle.bucketColumnHandle;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createBaseColumn;
 import static io.prestosql.plugin.hive.HiveColumnHandle.fileModifiedTimeColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.fileSizeColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.isBucketColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.isFileModifiedTimeColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.isFileSizeColumnHandle;
+import static io.prestosql.plugin.hive.HiveColumnHandle.isPartitionColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.isPathColumnHandle;
+import static io.prestosql.plugin.hive.HiveColumnHandle.partitionColumnHandle;
 import static io.prestosql.plugin.hive.HiveColumnHandle.pathColumnHandle;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
@@ -122,7 +132,11 @@ import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_SERDE_NOT_FOUND;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static io.prestosql.plugin.hive.HiveMetadata.SKIP_FOOTER_COUNT_KEY;
 import static io.prestosql.plugin.hive.HiveMetadata.SKIP_HEADER_COUNT_KEY;
+import static io.prestosql.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.prestosql.plugin.hive.HivePartitionKey.HIVE_DEFAULT_DYNAMIC_PARTITION;
+import static io.prestosql.plugin.hive.HiveQlToPrestoTranslator.translateHiveViewToPresto;
+import static io.prestosql.plugin.hive.HiveTableProperties.ORC_BLOOM_FILTER_COLUMNS;
+import static io.prestosql.plugin.hive.HiveTableProperties.ORC_BLOOM_FILTER_FPP;
 import static io.prestosql.plugin.hive.HiveType.toHiveTypes;
 import static io.prestosql.plugin.hive.util.ConfigurationUtils.copy;
 import static io.prestosql.plugin.hive.util.ConfigurationUtils.toJobConf;
@@ -215,8 +229,12 @@ public final class HiveUtil
         List<HiveColumnHandle> readColumns = columns.stream()
                 .filter(column -> column.getColumnType() == REGULAR)
                 .collect(toImmutableList());
+
+        // Projected columns are not supported here
+        readColumns.forEach(readColumn -> checkArgument(readColumn.isBaseColumn(), "column %s is not a base column", readColumn.getName()));
+
         List<Integer> readHiveColumnIndexes = readColumns.stream()
-                .map(HiveColumnHandle::getHiveColumnIndex)
+                .map(HiveColumnHandle::getBaseHiveColumnIndex)
                 .collect(toImmutableList());
 
         // Tell hive the columns we would like to read, this lets hive optimize reading column oriented files
@@ -238,7 +256,8 @@ public final class HiveUtil
             RecordReader<WritableComparable, Writable> recordReader = (RecordReader<WritableComparable, Writable>) inputFormat.getRecordReader(fileSplit, jobConf, Reporter.NULL);
 
             int headerCount = getHeaderCount(schema);
-            if (headerCount > 0) {
+            //  Only skip header rows when the split is at the beginning of the file
+            if (start == 0 && headerCount > 0) {
                 Utilities.skipHeader(recordReader, headerCount, recordReader.createKey(), recordReader.createValue());
             }
 
@@ -310,8 +329,11 @@ public final class HiveUtil
 
             Class<? extends InputFormat<?, ?>> inputFormatClass = getInputFormatClass(jobConf, inputFormatName);
             if (symlinkTarget && inputFormatClass == SymlinkTextInputFormat.class) {
-                // symlink targets are always TextInputFormat
+                // Symlink targets are assumed to be TEXTFILE unless serde indicates otherwise.
                 inputFormatClass = TextInputFormat.class;
+                if (isDeserializerClass(schema, AvroSerDe.class)) {
+                    inputFormatClass = AvroContainerInputFormat.class;
+                }
             }
 
             return ReflectionUtils.newInstance(inputFormatClass, jobConf);
@@ -415,7 +437,7 @@ public final class HiveUtil
         // see also https://issues.apache.org/jira/browse/HIVE-16922
         if (name.equals("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe")) {
             if (schema.containsKey("colelction.delim") && !schema.containsKey(COLLECTION_DELIM)) {
-                schema.put(COLLECTION_DELIM, schema.getProperty("colelction.delim"));
+                schema.setProperty(COLLECTION_DELIM, schema.getProperty("colelction.delim"));
             }
         }
 
@@ -665,6 +687,22 @@ public final class HiveUtil
         return VIEW_CODEC.fromJson(bytes);
     }
 
+    public static ConnectorViewDefinition buildHiveViewConnectorDefinition(CatalogName catalogName, Table view)
+    {
+        String viewText = view.getViewExpandedText()
+                .orElseThrow(() -> new PrestoException(HIVE_INVALID_METADATA, "No view expanded text: " + view.getSchemaTableName()));
+        return new ConnectorViewDefinition(
+                translateHiveViewToPresto(viewText),
+                Optional.of(catalogName.toString()),
+                Optional.ofNullable(view.getDatabaseName()),
+                view.getDataColumns().stream()
+                        .map(column -> new ViewColumn(column.getName(), TypeId.of(column.getType().getTypeSignature().toString())))
+                        .collect(toImmutableList()),
+                Optional.ofNullable(view.getParameters().get(TABLE_COMMENT)),
+                Optional.of(view.getOwner()),
+                false); // don't run as invoker
+    }
+
     public static Optional<DecimalType> getDecimalType(HiveType hiveType)
     {
         return getDecimalType(hiveType.getHiveTypeName().toString());
@@ -705,7 +743,7 @@ public final class HiveUtil
 
     public static boolean isStructuralType(HiveType hiveType)
     {
-        return hiveType.getCategory() == Category.LIST || hiveType.getCategory() == Category.MAP || hiveType.getCategory() == Category.STRUCT;
+        return hiveType.getCategory() == Category.LIST || hiveType.getCategory() == Category.MAP || hiveType.getCategory() == Category.STRUCT || hiveType.getCategory() == Category.UNION;
     }
 
     public static boolean booleanPartitionKey(String value, String name)
@@ -869,6 +907,9 @@ public final class HiveUtil
         }
         columns.add(fileSizeColumnHandle());
         columns.add(fileModifiedTimeColumnHandle());
+        if (!table.getPartitionColumns().isEmpty()) {
+            columns.add(partitionColumnHandle());
+        }
 
         return columns.build();
     }
@@ -881,8 +922,8 @@ public final class HiveUtil
         for (Column field : table.getDataColumns()) {
             // ignore unsupported types rather than failing
             HiveType hiveType = field.getType();
-            if (hiveType.isSupportedType()) {
-                columns.add(new HiveColumnHandle(field.getName(), hiveType, hiveType.getType(typeManager), hiveColumnIndex, REGULAR, field.getComment()));
+            if (hiveType.isSupportedType(table.getStorage().getStorageFormat())) {
+                columns.add(createBaseColumn(field.getName(), hiveColumnIndex, hiveType, hiveType.getType(typeManager), REGULAR, field.getComment()));
             }
             hiveColumnIndex++;
         }
@@ -897,10 +938,10 @@ public final class HiveUtil
         List<Column> partitionKeys = table.getPartitionColumns();
         for (Column field : partitionKeys) {
             HiveType hiveType = field.getType();
-            if (!hiveType.isSupportedType()) {
+            if (!hiveType.isSupportedType(table.getStorage().getStorageFormat())) {
                 throw new PrestoException(NOT_SUPPORTED, format("Unsupported Hive type %s found in partition keys of table %s.%s", hiveType, table.getDatabaseName(), table.getTableName()));
             }
-            columns.add(new HiveColumnHandle(field.getName(), hiveType, hiveType.getType(typeManager), -1, PARTITION_KEY, field.getComment()));
+            columns.add(createBaseColumn(field.getName(), -1, hiveType, hiveType.getType(typeManager), PARTITION_KEY, field.getComment()));
         }
 
         return columns.build();
@@ -942,7 +983,15 @@ public final class HiveUtil
         return resultBuilder.build();
     }
 
-    public static String getPrefilledColumnValue(HiveColumnHandle columnHandle, HivePartitionKey partitionKey, Path path, OptionalInt bucketNumber, long fileSize, long fileModifiedTime)
+    public static String getPrefilledColumnValue(
+            HiveColumnHandle columnHandle,
+            HivePartitionKey partitionKey,
+            Path path,
+            OptionalInt bucketNumber,
+            long fileSize,
+            long fileModifiedTime,
+            DateTimeZone hiveStorageTimeZone,
+            String partitionName)
     {
         if (partitionKey != null) {
             return partitionKey.getValue();
@@ -957,7 +1006,10 @@ public final class HiveUtil
             return String.valueOf(fileSize);
         }
         if (isFileModifiedTimeColumnHandle(columnHandle)) {
-            return String.valueOf(fileModifiedTime);
+            return HIVE_TIMESTAMP_PARSER.withZone(hiveStorageTimeZone).print(fileModifiedTime);
+        }
+        if (isPartitionColumnHandle(columnHandle)) {
+            return partitionName;
         }
         throw new PrestoException(NOT_SUPPORTED, "unsupported hidden column: " + columnHandle);
     }
@@ -1017,5 +1069,27 @@ public final class HiveUtil
     public static List<HiveType> getColumnTypes(Properties schema)
     {
         return toHiveTypes(schema.getProperty(IOConstants.COLUMNS_TYPES, ""));
+    }
+
+    public static OrcWriterOptions getOrcWriterOptions(Properties schema, OrcWriterOptions orcWriterOptions)
+    {
+        if (schema.contains(ORC_BLOOM_FILTER_COLUMNS)) {
+            if (!schema.contains(ORC_BLOOM_FILTER_FPP)) {
+                throw new PrestoException(HIVE_INVALID_METADATA, format("FPP for bloom filter is missing"));
+            }
+            try {
+                double fpp = parseDouble(schema.getProperty(ORC_BLOOM_FILTER_FPP));
+                if (fpp > 0.0 && fpp < 1.0) {
+                    throw new PrestoException(HIVE_UNSUPPORTED_FORMAT, format("Invalid value for bloom filter: %f", fpp));
+                }
+                return orcWriterOptions
+                        .withBloomFilterColumns(ImmutableSet.copyOf(COLUMN_NAMES_SPLITTER.splitToList(schema.getProperty(ORC_BLOOM_FILTER_COLUMNS))))
+                        .withBloomFilterFpp(fpp);
+            }
+            catch (NumberFormatException e) {
+                throw new PrestoException(HIVE_UNSUPPORTED_FORMAT, format("Invalid value for %s property: %s", ORC_BLOOM_FILTER_FPP, schema.getProperty(ORC_BLOOM_FILTER_FPP)));
+            }
+        }
+        return orcWriterOptions;
     }
 }

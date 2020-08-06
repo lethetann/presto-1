@@ -22,7 +22,6 @@ import com.google.common.collect.Iterables;
 import io.prestosql.metadata.AggregationFunctionMetadata;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.ResolvedFunction;
-import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.sql.planner.OrderingScheme;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.tree.Expression;
@@ -120,7 +119,7 @@ public class AggregationNode
      */
     public boolean hasDefaultOutput()
     {
-        return hasEmptyGroupingSet() && (step.isOutputPartial() || step.equals(SINGLE));
+        return hasEmptyGroupingSet() && (step.isOutputPartial() || step == SINGLE);
     }
 
     public boolean hasEmptyGroupingSet()
@@ -247,13 +246,15 @@ public class AggregationNode
         // there is no need for distributed aggregation. Single node FINAL aggregation will suffice,
         // since all input have to be aggregated into one line output.
         //
-        // 2. aggregations that must produce default output and are not decomposable, we can not distribute them.
+        // 2. aggregations that must produce default output and are not decomposable, we cannot distribute them.
         return (hasEmptyGroupingSet() && !hasNonEmptyGroupingSet()) || (hasDefaultOutput() && !isDecomposable(metadata));
     }
 
     public boolean isStreamable()
     {
-        return !preGroupedSymbols.isEmpty() && groupingSets.getGroupingSetCount() == 1 && groupingSets.getGlobalGroupingSets().isEmpty();
+        return ImmutableSet.copyOf(preGroupedSymbols).equals(ImmutableSet.copyOf(groupingSets.getGroupingKeys()))
+                && groupingSets.getGroupingSetCount() == 1
+                && groupingSets.getGlobalGroupingSets().isEmpty();
     }
 
     public static GroupingSetDescriptor globalAggregation()
@@ -464,8 +465,7 @@ public class AggregationNode
             else {
                 // Intermediate and final steps get the intermediate value and the lambda functions
                 expectedArgumentCount = 1 + (int) resolvedFunction.getSignature().getArgumentTypes().stream()
-                        .map(TypeSignature::getBase)
-                        .filter(FunctionType.NAME::equals)
+                        .filter(FunctionType.class::isInstance)
                         .count();
             }
 

@@ -13,27 +13,34 @@
  */
 package io.prestosql.sql.planner.sanity;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.sql.DynamicFilters;
+import io.prestosql.sql.planner.SubExpressionExtractor;
 import io.prestosql.sql.planner.TypeAnalyzer;
 import io.prestosql.sql.planner.TypeProvider;
+import io.prestosql.sql.planner.plan.DynamicFilterId;
 import io.prestosql.sql.planner.plan.FilterNode;
 import io.prestosql.sql.planner.plan.JoinNode;
 import io.prestosql.sql.planner.plan.OutputNode;
 import io.prestosql.sql.planner.plan.PlanNode;
 import io.prestosql.sql.planner.plan.PlanVisitor;
+import io.prestosql.sql.planner.plan.TableScanNode;
+import io.prestosql.sql.tree.Expression;
+import io.prestosql.sql.tree.SymbolReference;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Sets.difference;
 import static com.google.common.collect.Sets.intersection;
-import static io.prestosql.sql.DynamicFilters.extractDynamicFilters;
 
 /**
  * When dynamic filter assignments are present on a Join node, they should be consumed by a Filter node on it's probe side
@@ -44,12 +51,12 @@ public class DynamicFiltersChecker
     @Override
     public void validate(PlanNode plan, Session session, Metadata metadata, TypeAnalyzer typeAnalyzer, TypeProvider types, WarningCollector warningCollector)
     {
-        plan.accept(new PlanVisitor<Set<String>, Void>()
+        plan.accept(new PlanVisitor<Set<DynamicFilterId>, Void>()
         {
             @Override
-            protected Set<String> visitPlan(PlanNode node, Void context)
+            protected Set<DynamicFilterId> visitPlan(PlanNode node, Void context)
             {
-                Set<String> consumed = new HashSet<>();
+                Set<DynamicFilterId> consumed = new HashSet<>();
                 for (PlanNode source : node.getSources()) {
                     consumed.addAll(source.accept(this, context));
                 }
@@ -57,41 +64,64 @@ public class DynamicFiltersChecker
             }
 
             @Override
-            public Set<String> visitOutput(OutputNode node, Void context)
+            public Set<DynamicFilterId> visitOutput(OutputNode node, Void context)
             {
-                Set<String> unmatched = visitPlan(node, context);
+                Set<DynamicFilterId> unmatched = visitPlan(node, context);
                 verify(unmatched.isEmpty(), "All consumed dynamic filters could not be matched with a join.");
                 return unmatched;
             }
 
             @Override
-            public Set<String> visitJoin(JoinNode node, Void context)
+            public Set<DynamicFilterId> visitJoin(JoinNode node, Void context)
             {
-                Set<String> currentJoinDynamicFilters = node.getDynamicFilters().keySet();
-                Set<String> consumedProbeSide = node.getLeft().accept(this, context);
-                verify(difference(currentJoinDynamicFilters, consumedProbeSide).isEmpty(),
-                        "Dynamic filters present in join were not fully consumed by it's probe side.");
+                Set<DynamicFilterId> currentJoinDynamicFilters = node.getDynamicFilters().keySet();
+                Set<DynamicFilterId> consumedProbeSide = node.getLeft().accept(this, context);
+                Set<DynamicFilterId> unconsumedByProbeSide = difference(currentJoinDynamicFilters, consumedProbeSide);
+                verify(unconsumedByProbeSide.isEmpty(),
+                        "Dynamic filters %s present in join were not fully consumed by it's probe side.", unconsumedByProbeSide);
 
-                Set<String> consumedBuildSide = node.getRight().accept(this, context);
-                verify(intersection(currentJoinDynamicFilters, consumedBuildSide).isEmpty());
+                Set<DynamicFilterId> consumedBuildSide = node.getRight().accept(this, context);
+                Set<DynamicFilterId> unconsumedByBuildSide = intersection(currentJoinDynamicFilters, consumedBuildSide);
+                verify(unconsumedByBuildSide.isEmpty(),
+                        "Dynamic filters %s present in join were consumed by it's build side.", unconsumedByBuildSide);
 
-                Set<String> unmatched = new HashSet<>(consumedBuildSide);
+                List<DynamicFilters.Descriptor> nonPushedDownFilters = node
+                        .getFilter()
+                        .map(DynamicFilters::extractDynamicFilters)
+                        .map(DynamicFilters.ExtractResult::getDynamicConjuncts)
+                        .orElse(ImmutableList.of());
+                verify(nonPushedDownFilters.isEmpty(), "Dynamic filters %s present in join filter predicate were not pushed down.", nonPushedDownFilters);
+
+                Set<DynamicFilterId> unmatched = new HashSet<>(consumedBuildSide);
                 unmatched.addAll(consumedProbeSide);
                 unmatched.removeAll(currentJoinDynamicFilters);
                 return ImmutableSet.copyOf(unmatched);
             }
 
             @Override
-            public Set<String> visitFilter(FilterNode node, Void context)
+            public Set<DynamicFilterId> visitFilter(FilterNode node, Void context)
             {
-                ImmutableSet.Builder<String> consumed = ImmutableSet.builder();
-                List<DynamicFilters.Descriptor> dynamicFilters = extractDynamicFilters(metadata, node.getPredicate()).getDynamicConjuncts();
-                dynamicFilters.stream()
-                        .map(DynamicFilters.Descriptor::getId)
-                        .forEach(consumed::add);
+                List<DynamicFilters.Descriptor> dynamicFilters = extractDynamicPredicates(node.getPredicate());
+                if (!dynamicFilters.isEmpty()) {
+                    verify(node.getSource() instanceof TableScanNode, "Dynamic filters %s present in filter predicate whose source is not a table scan.", dynamicFilters);
+                }
+                ImmutableSet.Builder<DynamicFilterId> consumed = ImmutableSet.builder();
+                dynamicFilters.forEach(descriptor -> {
+                    verify(descriptor.getInput() instanceof SymbolReference, "Dynamic filter expression must be a SymbolReference");
+                    consumed.add(descriptor.getId());
+                });
                 consumed.addAll(node.getSource().accept(this, context));
                 return consumed.build();
             }
         }, null);
+    }
+
+    private static List<DynamicFilters.Descriptor> extractDynamicPredicates(Expression expression)
+    {
+        return SubExpressionExtractor.extract(expression).stream()
+                .map(DynamicFilters::getDescriptor)
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .collect(toImmutableList());
     }
 }

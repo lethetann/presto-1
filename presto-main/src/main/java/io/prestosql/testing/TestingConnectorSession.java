@@ -24,6 +24,7 @@ import io.prestosql.spi.session.PropertyMetadata;
 import io.prestosql.spi.type.TimeZoneKey;
 import io.prestosql.sql.analyzer.FeaturesConfig;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -39,50 +40,43 @@ public class TestingConnectorSession
         implements ConnectorSession
 {
     private static final QueryIdGenerator queryIdGenerator = new QueryIdGenerator();
-    public static final ConnectorSession SESSION = new TestingConnectorSession(ImmutableList.of());
 
-    private final String queryId;
+    public static final ConnectorSession SESSION = builder().build();
+
+    private final String queryId = queryIdGenerator.createNextQueryId().toString();
     private final ConnectorIdentity identity;
     private final Optional<String> source;
     private final TimeZoneKey timeZoneKey;
     private final Locale locale;
     private final Optional<String> traceToken;
-    private final long startTime;
+    private final Instant start;
     private final Map<String, PropertyMetadata<?>> properties;
     private final Map<String, Object> propertyValues;
     private final boolean isLegacyTimestamp;
+    private final boolean omitTimestampPrecision;
 
-    public TestingConnectorSession(List<PropertyMetadata<?>> properties)
-    {
-        this(properties, ImmutableMap.of());
-    }
-
-    public TestingConnectorSession(List<PropertyMetadata<?>> properties, Map<String, Object> propertyValues)
-    {
-        this("user", Optional.of("test"), Optional.empty(), UTC_KEY, ENGLISH, System.currentTimeMillis(), properties, propertyValues, new FeaturesConfig().isLegacyTimestamp());
-    }
-
-    public TestingConnectorSession(
-            String user,
+    private TestingConnectorSession(
+            ConnectorIdentity identity,
             Optional<String> source,
             Optional<String> traceToken,
             TimeZoneKey timeZoneKey,
             Locale locale,
-            long startTime,
+            Instant start,
             List<PropertyMetadata<?>> propertyMetadatas,
             Map<String, Object> propertyValues,
-            boolean isLegacyTimestamp)
+            boolean isLegacyTimestamp,
+            boolean omitTimestampPrecision)
     {
-        this.queryId = queryIdGenerator.createNextQueryId().toString();
-        this.identity = new ConnectorIdentity(requireNonNull(user, "user is null"), Optional.empty(), Optional.empty());
+        this.identity = requireNonNull(identity, "identity is null");
         this.source = requireNonNull(source, "source is null");
         this.traceToken = requireNonNull(traceToken, "traceToken is null");
         this.timeZoneKey = requireNonNull(timeZoneKey, "timeZoneKey is null");
         this.locale = requireNonNull(locale, "locale is null");
-        this.startTime = startTime;
+        this.start = start;
         this.properties = Maps.uniqueIndex(propertyMetadatas, PropertyMetadata::getName);
         this.propertyValues = ImmutableMap.copyOf(propertyValues);
         this.isLegacyTimestamp = isLegacyTimestamp;
+        this.omitTimestampPrecision = omitTimestampPrecision;
     }
 
     @Override
@@ -116,9 +110,9 @@ public class TestingConnectorSession
     }
 
     @Override
-    public long getStartTime()
+    public Instant getStart()
     {
-        return startTime;
+        return start;
     }
 
     @Override
@@ -156,9 +150,87 @@ public class TestingConnectorSession
                 .add("traceToken", traceToken.orElse(null))
                 .add("timeZoneKey", timeZoneKey)
                 .add("locale", locale)
-                .add("startTime", startTime)
+                .add("start", start)
                 .add("properties", propertyValues)
                 .omitNullValues()
                 .toString();
+    }
+
+    public static Builder builder()
+    {
+        return new Builder();
+    }
+
+    public static class Builder
+    {
+        private ConnectorIdentity identity = ConnectorIdentity.ofUser("user");
+        private final Optional<String> source = Optional.of("test");
+        private TimeZoneKey timeZoneKey = UTC_KEY;
+        private final Locale locale = ENGLISH;
+        private final Optional<String> traceToken = Optional.empty();
+        private Optional<Instant> start = Optional.empty();
+        private List<PropertyMetadata<?>> propertyMetadatas = ImmutableList.of();
+        private Map<String, Object> propertyValues = ImmutableMap.of();
+        private boolean isLegacyTimestamp = new FeaturesConfig().isLegacyTimestamp();
+        private boolean omitTimestampPrecision = new FeaturesConfig().isOmitDateTimeTypePrecision();
+
+        public Builder setIdentity(ConnectorIdentity identity)
+        {
+            this.identity = requireNonNull(identity, "identity is null");
+            return this;
+        }
+
+        public Builder setTimeZoneKey(TimeZoneKey timeZoneKey)
+        {
+            this.timeZoneKey = requireNonNull(timeZoneKey, "timeZoneKey is null");
+            return this;
+        }
+
+        public Builder setStart(Instant start)
+        {
+            this.start = Optional.of(start);
+            return this;
+        }
+
+        public Builder setPropertyMetadata(List<PropertyMetadata<?>> propertyMetadatas)
+        {
+            requireNonNull(propertyMetadatas, "propertyMetadatas is null");
+            this.propertyMetadatas = propertyMetadatas;
+            return this;
+        }
+
+        public Builder setPropertyValues(Map<String, Object> propertyValues)
+        {
+            requireNonNull(propertyValues, "propertyValues is null");
+            this.propertyValues = ImmutableMap.copyOf(propertyValues);
+            return this;
+        }
+
+        public Builder setLegacyTimestamp(boolean legacyTimestamp)
+        {
+            isLegacyTimestamp = legacyTimestamp;
+            return this;
+        }
+
+        public Builder setOmitTimestampPrecision(boolean value)
+        {
+            this.omitTimestampPrecision = value;
+            return this;
+        }
+
+        public TestingConnectorSession build()
+        {
+            return new TestingConnectorSession(
+                    identity,
+                    source,
+                    traceToken,
+                    timeZoneKey,
+                    locale,
+                    start.orElse(Instant.now()),
+                    propertyMetadatas,
+                    propertyValues,
+                    isLegacyTimestamp,
+                    omitTimestampPrecision);
+        }
     }
 }

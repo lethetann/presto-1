@@ -13,12 +13,14 @@
  */
 package io.prestosql.plugin.jdbc;
 
+import io.prestosql.spi.connector.AggregateFunction;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.ConnectorSplitSource;
 import io.prestosql.spi.connector.ConnectorTableMetadata;
 import io.prestosql.spi.connector.SchemaTableName;
+import io.prestosql.spi.connector.SystemTable;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.statistics.TableStatistics;
 import io.prestosql.spi.type.Type;
@@ -27,6 +29,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -49,7 +52,17 @@ public interface JdbcClient
 
     WriteMapping toWriteMapping(ConnectorSession session, Type type);
 
-    ConnectorSplitSource getSplits(JdbcIdentity identity, JdbcTableHandle tableHandle);
+    default boolean supportsGroupingSets()
+    {
+        return true;
+    }
+
+    default Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments)
+    {
+        return Optional.empty();
+    }
+
+    ConnectorSplitSource getSplits(ConnectorSession session, JdbcTableHandle tableHandle);
 
     Connection getConnection(JdbcIdentity identity, JdbcSplit split)
             throws SQLException;
@@ -65,7 +78,7 @@ public interface JdbcClient
 
     boolean supportsLimit();
 
-    boolean isLimitGuaranteed();
+    boolean isLimitGuaranteed(ConnectorSession session);
 
     void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column);
 
@@ -81,7 +94,7 @@ public interface JdbcClient
 
     void commitCreateTable(JdbcIdentity identity, JdbcOutputTableHandle handle);
 
-    JdbcOutputTableHandle beginInsertTable(ConnectorSession session, JdbcTableHandle tableHandle);
+    JdbcOutputTableHandle beginInsertTable(ConnectorSession session, JdbcTableHandle tableHandle, List<JdbcColumnHandle> columns);
 
     void finishInsertTable(JdbcIdentity identity, JdbcOutputTableHandle handle);
 
@@ -98,4 +111,17 @@ public interface JdbcClient
             throws SQLException;
 
     TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle, TupleDomain<ColumnHandle> tupleDomain);
+
+    void createSchema(JdbcIdentity identity, String schemaName);
+
+    void dropSchema(JdbcIdentity identity, String schemaName);
+
+    default Optional<SystemTable> getSystemTable(ConnectorSession session, SchemaTableName tableName)
+    {
+        return Optional.empty();
+    }
+
+    String quoted(String name);
+
+    String quoted(RemoteTableName remoteTableName);
 }

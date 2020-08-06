@@ -23,6 +23,7 @@ import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
 
+import java.time.Instant;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,7 +31,7 @@ import static com.google.common.base.Verify.verify;
 import static io.prestosql.spi.type.TimeType.TIME;
 import static io.prestosql.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
 import static io.prestosql.spi.type.TimeZoneKey.getTimeZoneKey;
-import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
+import static io.prestosql.spi.type.TimestampType.createTimestampType;
 import static io.prestosql.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static io.prestosql.testing.TestingSession.testSessionBuilder;
 
@@ -49,29 +50,29 @@ public class TestDateTimeOperators
 
         assertFunction(
                 "TIMESTAMP '2013-03-31 00:05' + INTERVAL '1' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 3, 31, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-03-31 00:05' + INTERVAL '2' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 2, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 3, 31, 2, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-03-31 00:05' + INTERVAL '3' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 3, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 3, 31, 3, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
 
         assertFunction(
                 "TIMESTAMP '2013-03-31 04:05' - INTERVAL '3' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 3, 31, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-03-31 03:05' - INTERVAL '2' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 3, 31, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-03-31 01:05' - INTERVAL '1' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 3, 31, 0, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
     }
 
     @Test
@@ -79,43 +80,43 @@ public class TestDateTimeOperators
     {
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '1' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '2' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 2, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 2, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
 
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '3' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 3, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 3, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '4' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 4, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 4, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
 
         assertFunction(
                 "TIMESTAMP '2013-10-27 03:05' - INTERVAL '4' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 26, 23, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 26, 23, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-10-27 02:05' - INTERVAL '2' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 0, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-10-27 01:05' - INTERVAL '1' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 0, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
 
         assertFunction(
                 "TIMESTAMP '2013-10-27 03:05' - INTERVAL '1' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 2, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 2, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
         assertFunction(
                 "TIMESTAMP '2013-10-27 03:05' - INTERVAL '2' hour",
-                TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
+                createTimestampType(3),
+                sqlTimestampOf(3, 2013, 10, 27, 1, 5, 0, 0, DATE_TIME_ZONE, TIME_ZONE_KEY, session.toConnectorSession()));
     }
 
     @Test
@@ -194,7 +195,7 @@ public class TestDateTimeOperators
     {
         Session localSession = testSessionBuilder()
                 .setTimeZoneKey(getTimeZoneKey("America/Los_Angeles"))
-                .setStartTime(date.getMillis())
+                .setStart(Instant.ofEpochMilli(date.getMillis()))
                 .setSystemProperty("legacy_timestamp", "false")
                 .build();
 

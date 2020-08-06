@@ -15,8 +15,11 @@ package io.prestosql.plugin.kudu;
 
 import io.prestosql.testing.AbstractTestQueryFramework;
 import io.prestosql.testing.MaterializedResult;
+import io.prestosql.testing.QueryRunner;
+import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
+import static io.prestosql.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunner;
 import static java.lang.String.join;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
@@ -79,9 +82,20 @@ public class TestKuduIntegrationRangePartitioning
                     "{\"lower\": [2, \"Z\"], \"upper\": null}"),
     };
 
-    public TestKuduIntegrationRangePartitioning()
+    private TestingKuduServer kuduServer;
+
+    @Override
+    protected QueryRunner createQueryRunner()
+            throws Exception
     {
-        super(() -> KuduQueryRunnerFactory.createKuduQueryRunner("range_partitioning"));
+        kuduServer = new TestingKuduServer();
+        return createKuduQueryRunner(kuduServer, "range_partitioning");
+    }
+
+    @AfterClass(alwaysRun = true)
+    public final void destroy()
+    {
+        kuduServer.close();
     }
 
     @Test

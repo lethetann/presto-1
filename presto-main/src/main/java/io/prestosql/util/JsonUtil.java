@@ -36,6 +36,7 @@ import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.Decimals;
 import io.prestosql.spi.type.DoubleType;
 import io.prestosql.spi.type.IntegerType;
+import io.prestosql.spi.type.LongTimestamp;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.RealType;
 import io.prestosql.spi.type.RowType;
@@ -57,6 +58,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.math.BigDecimal;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -87,13 +90,13 @@ import static io.prestosql.spi.type.DoubleType.DOUBLE;
 import static io.prestosql.spi.type.IntegerType.INTEGER;
 import static io.prestosql.spi.type.RealType.REAL;
 import static io.prestosql.spi.type.SmallintType.SMALLINT;
-import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
 import static io.prestosql.type.JsonType.JSON;
+import static io.prestosql.type.Timestamps.formatTimestamp;
+import static io.prestosql.type.Timestamps.scaleEpochMillisToMicros;
 import static io.prestosql.type.TypeUtils.hashPosition;
 import static io.prestosql.type.TypeUtils.positionEqualsPosition;
 import static io.prestosql.util.DateTimeUtils.printDate;
-import static io.prestosql.util.DateTimeUtils.printTimestampWithoutTimeZone;
 import static io.prestosql.util.JsonUtil.ObjectKeyProvider.createObjectKeyProvider;
 import static it.unimi.dsi.fastutil.HashCommon.arraySize;
 import static java.lang.Float.floatToRawIntBits;
@@ -229,7 +232,7 @@ public final class JsonUtil
                 return (block, position) -> String.valueOf(type.getLong(block, position));
             }
             if (type instanceof RealType) {
-                return (block, position) -> String.valueOf(intBitsToFloat((int) type.getLong(block, position)));
+                return (block, position) -> String.valueOf(intBitsToFloat(toIntExact(type.getLong(block, position))));
             }
             if (type instanceof DoubleType) {
                 return (block, position) -> String.valueOf(type.getDouble(block, position));
@@ -288,7 +291,7 @@ public final class JsonUtil
                 return new JsonJsonGeneratorWriter();
             }
             if (type instanceof TimestampType) {
-                return new TimestampJsonGeneratorWriter();
+                return new TimestampJsonGeneratorWriter((TimestampType) type);
             }
             if (type instanceof DateType) {
                 return new DateGeneratorWriter();
@@ -382,7 +385,7 @@ public final class JsonUtil
                 jsonGenerator.writeNull();
             }
             else {
-                float value = intBitsToFloat((int) REAL.getLong(block, position));
+                float value = intBitsToFloat(toIntExact(REAL.getLong(block, position)));
                 jsonGenerator.writeNumber(value);
             }
         }
@@ -499,6 +502,13 @@ public final class JsonUtil
     private static class TimestampJsonGeneratorWriter
             implements JsonGeneratorWriter
     {
+        private final TimestampType type;
+
+        public TimestampJsonGeneratorWriter(TimestampType type)
+        {
+            this.type = type;
+        }
+
         @Override
         public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
                 throws IOException
@@ -507,8 +517,28 @@ public final class JsonUtil
                 jsonGenerator.writeNull();
             }
             else {
-                long value = TIMESTAMP.getLong(block, position);
-                jsonGenerator.writeString(printTimestampWithoutTimeZone(session.getTimeZoneKey(), value));
+                long epochMicros;
+                int fraction;
+
+                if (type.isShort()) {
+                    epochMicros = type.getLong(block, position);
+                    if (type.getPrecision() <= 3) {
+                        epochMicros = scaleEpochMillisToMicros(epochMicros);
+                    }
+                    fraction = 0;
+                }
+                else {
+                    LongTimestamp timestamp = (LongTimestamp) type.getObject(block, position);
+                    epochMicros = timestamp.getEpochMicros();
+                    fraction = timestamp.getPicosOfMicro();
+                }
+
+                ZoneId zoneId = ZoneOffset.UTC;
+                if (session.isLegacyTimestamp()) {
+                    zoneId = session.getTimeZoneKey().getZoneId();
+                }
+
+                jsonGenerator.writeString(formatTimestamp(type.getPrecision(), epochMicros, fraction, zoneId));
             }
         }
     }
@@ -524,8 +554,8 @@ public final class JsonUtil
                 jsonGenerator.writeNull();
             }
             else {
-                long value = DATE.getLong(block, position);
-                jsonGenerator.writeString(printDate((int) value));
+                int value = toIntExact(DATE.getLong(block, position));
+                jsonGenerator.writeString(printDate(value));
             }
         }
     }
@@ -1238,7 +1268,7 @@ public final class JsonUtil
 
     public static Optional<Map<String, Integer>> getFieldNameToIndex(List<Field> rowFields)
     {
-        if (!rowFields.get(0).getName().isPresent()) {
+        if (rowFields.get(0).getName().isEmpty()) {
             return Optional.empty();
         }
 
@@ -1270,7 +1300,7 @@ public final class JsonUtil
         }
         else {
             verify(parser.getCurrentToken() == START_OBJECT);
-            if (!fieldNameToIndex.isPresent()) {
+            if (fieldNameToIndex.isEmpty()) {
                 throw new JsonCastException("Cannot cast a JSON object to anonymous row type. Input must be a JSON array.");
             }
             boolean[] fieldWritten = new boolean[fieldAppenders.length];

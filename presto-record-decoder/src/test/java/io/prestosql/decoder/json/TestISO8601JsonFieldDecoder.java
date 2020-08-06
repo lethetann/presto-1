@@ -60,20 +60,20 @@ public class TestISO8601JsonFieldDecoder
     @Test
     public void testDecodeInvalid()
     {
-        tester.assertInvalidInput("1", TIMESTAMP, "could not parse value '1' as 'timestamp' for column 'some_column'");
-        tester.assertInvalidInput("{}", TIMESTAMP, "could not parse non-value node as 'timestamp' for column 'some_column'");
-        tester.assertInvalidInput("\"a\"", TIMESTAMP, "could not parse value 'a' as 'timestamp' for column 'some_column'");
-        tester.assertInvalidInput("1", TIMESTAMP, "could not parse value '1' as 'timestamp' for column 'some_column'");
+        tester.assertInvalidInput("1", TIMESTAMP, "\\Qcould not parse value '1' as 'timestamp(3)' for column 'some_column'\\E");
+        tester.assertInvalidInput("{}", TIMESTAMP, "\\Qcould not parse non-value node as 'timestamp(3)' for column 'some_column'\\E");
+        tester.assertInvalidInput("\"a\"", TIMESTAMP, "\\Qcould not parse value 'a' as 'timestamp(3)' for column 'some_column'\\E");
+        tester.assertInvalidInput("1", TIMESTAMP, "\\Qcould not parse value '1' as 'timestamp(3)' for column 'some_column'\\E");
 
         tester.assertInvalidInput("\"2018-02-19T09:20:11\"", DATE, "could not parse value '2018-02-19T09:20:11' as 'date' for column 'some_column'");
         tester.assertInvalidInput("\"2018-02-19T09:20:11Z\"", DATE, "could not parse value '2018-02-19T09:20:11Z' as 'date' for column 'some_column'");
         tester.assertInvalidInput("\"09:20:11Z\"", DATE, "could not parse value '09:20:11Z' as 'date' for column 'some_column'");
         tester.assertInvalidInput("\"09:20:11\"", DATE, "could not parse value '09:20:11' as 'date' for column 'some_column'");
 
-        tester.assertInvalidInput("\"2018-02-19T09:20:11\"", TIMESTAMP_WITH_TIME_ZONE, "could not parse value '2018-02-19T09:20:11' as 'timestamp with time zone' for column 'some_column'");
-        tester.assertInvalidInput("\"09:20:11\"", TIMESTAMP_WITH_TIME_ZONE, "could not parse value '09:20:11' as 'timestamp with time zone' for column 'some_column'");
-        tester.assertInvalidInput("\"09:20:11Z\"", TIMESTAMP_WITH_TIME_ZONE, "could not parse value '09:20:11Z' as 'timestamp with time zone' for column 'some_column'");
-        tester.assertInvalidInput("\"2018-02-19\"", TIMESTAMP_WITH_TIME_ZONE, "could not parse value '2018-02-19' as 'timestamp with time zone' for column 'some_column'");
+        tester.assertInvalidInput("\"2018-02-19T09:20:11\"", TIMESTAMP_WITH_TIME_ZONE, "\\Qcould not parse value '2018-02-19T09:20:11' as 'timestamp(3) with time zone' for column 'some_column'\\E");
+        tester.assertInvalidInput("\"09:20:11\"", TIMESTAMP_WITH_TIME_ZONE, "\\Qcould not parse value '09:20:11' as 'timestamp(3) with time zone' for column 'some_column'\\E");
+        tester.assertInvalidInput("\"09:20:11Z\"", TIMESTAMP_WITH_TIME_ZONE, "\\Qcould not parse value '09:20:11Z' as 'timestamp(3) with time zone' for column 'some_column'\\E");
+        tester.assertInvalidInput("\"2018-02-19\"", TIMESTAMP_WITH_TIME_ZONE, "\\Qcould not parse value '2018-02-19' as 'timestamp(3) with time zone' for column 'some_column'\\E");
 
         tester.assertInvalidInput("\"2018-02-19T09:20:11\"", TIME, "could not parse value '2018-02-19T09:20:11' as 'time' for column 'some_column'");
         tester.assertInvalidInput("\"2018-02-19T09:20:11Z\"", TIME, "could not parse value '2018-02-19T09:20:11Z' as 'time' for column 'some_column'");

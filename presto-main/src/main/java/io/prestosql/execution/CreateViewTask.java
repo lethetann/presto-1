@@ -95,8 +95,9 @@ public class CreateViewTask
                 session.getCatalog(),
                 session.getSchema(),
                 columns,
+                statement.getComment(),
                 owner,
-                !owner.isPresent());
+                owner.isEmpty());
 
         metadata.createView(session, name, definition, statement.isReplace());
 

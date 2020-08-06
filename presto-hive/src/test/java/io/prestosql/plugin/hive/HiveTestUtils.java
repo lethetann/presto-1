@@ -22,6 +22,8 @@ import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.ResolvedFunction;
 import io.prestosql.operator.PagesIndex;
 import io.prestosql.plugin.hive.authentication.NoHdfsAuthentication;
+import io.prestosql.plugin.hive.azure.HiveAzureConfig;
+import io.prestosql.plugin.hive.azure.PrestoAzureConfigurationInitializer;
 import io.prestosql.plugin.hive.gcs.GoogleGcsConfigurationInitializer;
 import io.prestosql.plugin.hive.gcs.HiveGcsConfig;
 import io.prestosql.plugin.hive.orc.OrcFileWriterFactory;
@@ -32,12 +34,16 @@ import io.prestosql.plugin.hive.parquet.ParquetPageSourceFactory;
 import io.prestosql.plugin.hive.parquet.ParquetReaderConfig;
 import io.prestosql.plugin.hive.parquet.ParquetWriterConfig;
 import io.prestosql.plugin.hive.rcfile.RcFilePageSourceFactory;
+import io.prestosql.plugin.hive.rubix.RubixEnabledConfig;
 import io.prestosql.plugin.hive.s3.HiveS3Config;
 import io.prestosql.plugin.hive.s3.PrestoS3ConfigurationInitializer;
+import io.prestosql.plugin.hive.s3select.PrestoS3ClientFactory;
+import io.prestosql.plugin.hive.s3select.S3SelectRecordCursorProvider;
 import io.prestosql.spi.PageSorter;
 import io.prestosql.spi.block.Block;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorSession;
+import io.prestosql.spi.function.InvocationConvention;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.MapType;
 import io.prestosql.spi.type.NamedTypeSignature;
@@ -52,11 +58,14 @@ import io.prestosql.type.InternalTypeManager;
 import java.lang.invoke.MethodHandle;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
+import static io.prestosql.spi.function.InvocationConvention.InvocationArgumentConvention.NULL_FLAG;
+import static io.prestosql.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.prestosql.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.prestosql.spi.type.Decimals.encodeScaledValue;
 
@@ -75,33 +84,67 @@ public final class HiveTestUtils
 
     public static ConnectorSession getHiveSession(HiveConfig hiveConfig)
     {
-        return new TestingConnectorSession(getHiveSessionProperties(hiveConfig).getSessionProperties());
+        return getHiveSession(hiveConfig, new OrcReaderConfig());
+    }
+
+    public static TestingConnectorSession getHiveSession(HiveConfig hiveConfig, OrcReaderConfig orcReaderConfig)
+    {
+        return TestingConnectorSession.builder()
+                .setPropertyMetadata(getHiveSessionProperties(hiveConfig, orcReaderConfig).getSessionProperties())
+                .build();
+    }
+
+    public static TestingConnectorSession getHiveSession(HiveConfig hiveConfig, ParquetWriterConfig parquetWriterConfig)
+    {
+        return TestingConnectorSession.builder()
+                .setPropertyMetadata(getHiveSessionProperties(hiveConfig, parquetWriterConfig).getSessionProperties())
+                .build();
     }
 
     public static HiveSessionProperties getHiveSessionProperties(HiveConfig hiveConfig)
+    {
+        return getHiveSessionProperties(hiveConfig, new OrcReaderConfig());
+    }
+
+    public static HiveSessionProperties getHiveSessionProperties(HiveConfig hiveConfig, OrcReaderConfig orcReaderConfig)
+    {
+        return getHiveSessionProperties(hiveConfig, new RubixEnabledConfig(), orcReaderConfig);
+    }
+
+    public static HiveSessionProperties getHiveSessionProperties(HiveConfig hiveConfig, RubixEnabledConfig rubixEnabledConfig, OrcReaderConfig orcReaderConfig)
+    {
+        return new HiveSessionProperties(
+                hiveConfig,
+                orcReaderConfig,
+                new OrcWriterConfig(),
+                new ParquetReaderConfig(),
+                new ParquetWriterConfig());
+    }
+
+    public static HiveSessionProperties getHiveSessionProperties(HiveConfig hiveConfig, ParquetWriterConfig parquetWriterConfig)
     {
         return new HiveSessionProperties(
                 hiveConfig,
                 new OrcReaderConfig(),
                 new OrcWriterConfig(),
                 new ParquetReaderConfig(),
-                new ParquetWriterConfig());
+                parquetWriterConfig);
     }
 
-    public static Set<HivePageSourceFactory> getDefaultHivePageSourceFactories(HiveConfig hiveConfig, HdfsEnvironment hdfsEnvironment)
+    public static Set<HivePageSourceFactory> getDefaultHivePageSourceFactories(HdfsEnvironment hdfsEnvironment)
     {
         FileFormatDataSourceStats stats = new FileFormatDataSourceStats();
         return ImmutableSet.<HivePageSourceFactory>builder()
                 .add(new RcFilePageSourceFactory(TYPE_MANAGER, hdfsEnvironment, stats))
                 .add(new OrcPageSourceFactory(new OrcReaderConfig(), hdfsEnvironment, stats))
-                .add(new ParquetPageSourceFactory(TYPE_MANAGER, hdfsEnvironment, stats, new ParquetReaderConfig()))
+                .add(new ParquetPageSourceFactory(hdfsEnvironment, stats, new ParquetReaderConfig()))
                 .build();
     }
 
-    public static Set<HiveRecordCursorProvider> getDefaultHiveRecordCursorProvider(HiveConfig hiveConfig, HdfsEnvironment hdfsEnvironment)
+    public static Set<HiveRecordCursorProvider> getDefaultHiveRecordCursorProviders(HiveConfig hiveConfig, HdfsEnvironment hdfsEnvironment)
     {
         return ImmutableSet.<HiveRecordCursorProvider>builder()
-                .add(new GenericHiveRecordCursorProvider(hdfsEnvironment, hiveConfig))
+                .add(new S3SelectRecordCursorProvider(hdfsEnvironment, new PrestoS3ClientFactory(hiveConfig)))
                 .build();
     }
 
@@ -136,17 +179,18 @@ public final class HiveTestUtils
 
     public static HiveRecordCursorProvider createGenericHiveRecordCursorProvider(HdfsEnvironment hdfsEnvironment)
     {
-        return new GenericHiveRecordCursorProvider(hdfsEnvironment, new DataSize(100, MEGABYTE));
+        return new GenericHiveRecordCursorProvider(hdfsEnvironment, DataSize.of(100, MEGABYTE));
     }
 
-    public static HdfsEnvironment createTestHdfsEnvironment()
+    private static HdfsEnvironment createTestHdfsEnvironment()
     {
         HdfsConfiguration hdfsConfig = new HiveHdfsConfiguration(
                 new HdfsConfigurationInitializer(
                         new HdfsConfig(),
                         ImmutableSet.of(
                                 new PrestoS3ConfigurationInitializer(new HiveS3Config()),
-                                new GoogleGcsConfigurationInitializer(new HiveGcsConfig()))),
+                                new GoogleGcsConfigurationInitializer(new HiveGcsConfig()),
+                                new PrestoAzureConfigurationInitializer(new HiveAzureConfig()))),
                 ImmutableSet.of());
         return new HdfsEnvironment(hdfsConfig, new HdfsConfig(), new NoHdfsAuthentication());
     }
@@ -187,7 +231,8 @@ public final class HiveTestUtils
     public static MethodHandle distinctFromOperator(Type type)
     {
         ResolvedFunction function = METADATA.resolveOperator(IS_DISTINCT_FROM, ImmutableList.of(type, type));
-        return METADATA.getScalarFunctionImplementation(function).getMethodHandle();
+        InvocationConvention invocationConvention = new InvocationConvention(ImmutableList.of(NULL_FLAG, NULL_FLAG), FAIL_ON_NULL, false, false);
+        return METADATA.getScalarFunctionInvoker(function, Optional.of(invocationConvention)).getMethodHandle();
     }
 
     public static boolean isDistinctFrom(MethodHandle handle, Block left, Block right)

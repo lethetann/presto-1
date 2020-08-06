@@ -23,14 +23,13 @@ import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodType;
 import java.util.Optional;
 
-import static com.google.common.base.Defaults.defaultValue;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.spi.StandardErrorCode.EXCEEDED_FUNCTION_MEMORY_LIMIT;
 import static io.prestosql.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
-import static io.prestosql.spi.type.TypeUtils.readNativeValue;
 import static io.prestosql.type.TypeUtils.hashPosition;
 import static io.prestosql.type.TypeUtils.positionEqualsPosition;
 import static io.prestosql.util.Failures.internalError;
@@ -41,7 +40,7 @@ import static java.util.Objects.requireNonNull;
 public class TypedSet
 {
     @VisibleForTesting
-    public static final DataSize MAX_FUNCTION_MEMORY = new DataSize(4, MEGABYTE);
+    public static final DataSize MAX_FUNCTION_MEMORY = DataSize.of(4, MEGABYTE);
 
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(TypedSet.class).instanceSize();
     private static final int INT_ARRAY_LIST_INSTANCE_SIZE = ClassLayout.parseClass(IntArrayList.class).instanceSize();
@@ -87,9 +86,10 @@ public class TypedSet
         checkArgument(expectedSize >= 0, "expectedSize must not be negative");
         this.elementType = requireNonNull(elementType, "elementType must not be null");
         this.elementIsDistinctFrom = requireNonNull(elementIsDistinctFrom, "elementIsDistinctFrom is null");
+        elementIsDistinctFrom.ifPresent(methodHandle -> checkArgument(methodHandle.type().equals(MethodType.methodType(boolean.class, Block.class, int.class, Block.class, int.class))));
         this.elementBlock = requireNonNull(blockBuilder, "blockBuilder must not be null");
         this.functionName = functionName;
-        this.maxBlockMemoryInBytes = maxBlockMemory.map(value -> value.toBytes()).orElse(Long.MAX_VALUE);
+        this.maxBlockMemoryInBytes = maxBlockMemory.map(DataSize::toBytes).orElse(Long.MAX_VALUE);
 
         initialElementBlockOffset = elementBlock.getPositionCount();
         initialElementBlockSizeInBytes = elementBlock.getSizeInBytes();
@@ -122,7 +122,7 @@ public class TypedSet
             return containsNullElement;
         }
         else {
-            return blockPositionByHash.get(getHashPositionOfElement(block, position)) != EMPTY_SLOT;
+            return blockPositionByHash.getInt(getHashPositionOfElement(block, position)) != EMPTY_SLOT;
         }
     }
 
@@ -137,7 +137,7 @@ public class TypedSet
         }
 
         int hashPosition = getHashPositionOfElement(block, position);
-        if (blockPositionByHash.get(hashPosition) == EMPTY_SLOT) {
+        if (blockPositionByHash.getInt(hashPosition) == EMPTY_SLOT) {
             addNewElement(hashPosition, block, position);
         }
     }
@@ -149,7 +149,7 @@ public class TypedSet
 
     public int positionOf(Block block, int position)
     {
-        return blockPositionByHash.get(getHashPositionOfElement(block, position));
+        return blockPositionByHash.getInt(getHashPositionOfElement(block, position));
     }
 
     /**
@@ -159,7 +159,7 @@ public class TypedSet
     {
         int hashPosition = getMaskedHash(hashPosition(elementType, block, position));
         while (true) {
-            int blockPosition = blockPositionByHash.get(hashPosition);
+            int blockPosition = blockPositionByHash.getInt(hashPosition);
             if (blockPosition == EMPTY_SLOT) {
                 // Doesn't have this element
                 return hashPosition;
@@ -176,12 +176,9 @@ public class TypedSet
     private boolean isContainedAt(Block block, int position, int atPosition)
     {
         if (elementIsDistinctFrom.isPresent()) {
-            boolean firstValueNull = elementBlock.isNull(atPosition);
-            Object firstValue = firstValueNull ? defaultValue(elementType.getJavaType()) : readNativeValue(elementType, elementBlock, atPosition);
-            boolean secondValueNull = block.isNull(position);
-            Object secondValue = secondValueNull ? defaultValue(elementType.getJavaType()) : readNativeValue(elementType, block, position);
             try {
-                return !(boolean) elementIsDistinctFrom.get().invoke(firstValue, firstValueNull, secondValue, secondValueNull);
+                boolean isNotDistinctFrom = !(boolean) elementIsDistinctFrom.get().invokeExact((Block) elementBlock, atPosition, block, position);
+                return isNotDistinctFrom;
             }
             catch (Throwable t) {
                 throw internalError(t);

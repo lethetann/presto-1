@@ -34,8 +34,11 @@ import io.prestosql.orc.metadata.OrcType;
 import io.prestosql.orc.metadata.Stream;
 import io.prestosql.orc.metadata.StripeFooter;
 import io.prestosql.orc.metadata.StripeInformation;
+import io.prestosql.orc.metadata.statistics.BloomFilterBuilder;
 import io.prestosql.orc.metadata.statistics.ColumnStatistics;
+import io.prestosql.orc.metadata.statistics.NoOpBloomFilterBuilder;
 import io.prestosql.orc.metadata.statistics.StripeStatistics;
+import io.prestosql.orc.metadata.statistics.Utf8BloomFilterBuilder;
 import io.prestosql.orc.stream.OrcDataOutput;
 import io.prestosql.orc.stream.StreamDataOutput;
 import io.prestosql.orc.writer.ColumnWriter;
@@ -57,7 +60,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -119,6 +124,10 @@ public final class OrcWriter
     private long previouslyRecordedSizeInBytes;
     private boolean closed;
 
+    private long fileRowCount;
+    private Optional<ColumnMetadata<ColumnStatistics>> fileStats;
+    private long fileStatsRetainedBytes;
+
     @Nullable
     private final OrcWriteValidationBuilder validationBuilder;
 
@@ -126,6 +135,7 @@ public final class OrcWriter
             OrcDataSink orcDataSink,
             List<String> columnNames,
             List<Type> types,
+            ColumnMetadata<OrcType> orcTypes,
             CompressionKind compression,
             OrcWriterOptions options,
             boolean writeLegacyVersion,
@@ -163,7 +173,7 @@ public final class OrcWriter
         this.stats = requireNonNull(stats, "stats is null");
 
         requireNonNull(columnNames, "columnNames is null");
-        this.orcTypes = OrcType.createRootOrcType(columnNames, types);
+        this.orcTypes = requireNonNull(orcTypes, "orcTypes is null");
         recordValidation(validation -> validation.setColumnNames(columnNames));
 
         // create column writers
@@ -174,7 +184,15 @@ public final class OrcWriter
         for (int fieldId = 0; fieldId < types.size(); fieldId++) {
             OrcColumnId fieldColumnIndex = rootType.getFieldTypeIndex(fieldId);
             Type fieldType = types.get(fieldId);
-            ColumnWriter columnWriter = createColumnWriter(fieldColumnIndex, orcTypes, fieldType, compression, maxCompressionBufferSize, hiveStorageTimeZone, options.getMaxStringStatisticsLimit());
+            ColumnWriter columnWriter = createColumnWriter(
+                    fieldColumnIndex,
+                    orcTypes,
+                    fieldType,
+                    compression,
+                    maxCompressionBufferSize,
+                    hiveStorageTimeZone,
+                    options.getMaxStringStatisticsLimit(),
+                    getBloomFilterBuilder(options, columnNames.get(fieldId)));
             columnWriters.add(columnWriter);
 
             if (columnWriter instanceof SliceDictionaryColumnWriter) {
@@ -226,7 +244,8 @@ public final class OrcWriter
                 columnWritersRetainedBytes +
                 closedStripesRetainedBytes +
                 orcDataSink.getRetainedSizeInBytes() +
-                (validationBuilder == null ? 0 : validationBuilder.getRetainedSize());
+                (validationBuilder == null ? 0 : validationBuilder.getRetainedSize()) +
+                fileStatsRetainedBytes;
     }
 
     public void write(Page page)
@@ -262,6 +281,7 @@ public final class OrcWriter
             }
 
             writeChunk(chunk);
+            fileRowCount += chunkRows;
         }
 
         long recordedSizeInBytes = getRetainedBytes();
@@ -383,6 +403,11 @@ public final class OrcWriter
                 allStreams.add(indexStream.getStream());
                 indexLength += indexStream.size();
             }
+            for (StreamDataOutput bloomFilter : columnWriter.getBloomFilters(metadataWriter)) {
+                outputData.add(bloomFilter);
+                allStreams.add(bloomFilter.getStream());
+                indexLength += bloomFilter.size();
+            }
         }
 
         // data streams (sorted by size)
@@ -444,9 +469,9 @@ public final class OrcWriter
         stats.updateSizeInBytes(-previouslyRecordedSizeInBytes);
         previouslyRecordedSizeInBytes = 0;
 
-        flushStripe(CLOSED);
-
-        orcDataSink.close();
+        try (Closeable ignored = orcDataSink) {
+            flushStripe(CLOSED);
+        }
     }
 
     /**
@@ -465,22 +490,21 @@ public final class OrcWriter
         Slice metadataSlice = metadataWriter.writeMetadata(metadata);
         outputData.add(createDataOutput(metadataSlice));
 
-        long numberOfRows = closedStripes.stream()
-                .mapToLong(stripe -> stripe.getStripeInformation().getNumberOfRows())
-                .sum();
-
-        Optional<ColumnMetadata<ColumnStatistics>> fileStats = toFileStats(closedStripes.stream()
+        fileStats = toFileStats(closedStripes.stream()
                 .map(ClosedStripe::getStatistics)
                 .map(StripeStatistics::getColumnStatistics)
                 .collect(toList()));
+        fileStatsRetainedBytes = fileStats.map(stats -> stats.stream()
+                .mapToLong(ColumnStatistics::getRetainedSizeInBytes)
+                .sum()).orElse(0L);
         recordValidation(validation -> validation.setFileStatistics(fileStats));
 
         Map<String, Slice> userMetadata = this.userMetadata.entrySet().stream()
                 .collect(Collectors.toMap(Entry::getKey, entry -> utf8Slice(entry.getValue())));
 
         Footer footer = new Footer(
-                numberOfRows,
-                rowGroupMaxRowCount,
+                fileRowCount,
+                rowGroupMaxRowCount == 0 ? OptionalInt.empty() : OptionalInt.of(rowGroupMaxRowCount),
                 closedStripes.stream()
                         .map(ClosedStripe::getStripeInformation)
                         .collect(toImmutableList()),
@@ -513,6 +537,26 @@ public final class OrcWriter
     {
         checkState(validationBuilder != null, "validation is not enabled");
         validateFile(validationBuilder.build(), input, types, hiveStorageTimeZone);
+    }
+
+    public long getFileRowCount()
+    {
+        checkState(closed, "File row count is not available until the writing has finished");
+        return fileRowCount;
+    }
+
+    public Optional<ColumnMetadata<ColumnStatistics>> getFileStats()
+    {
+        checkState(closed, "File statistics are not available until the writing has finished");
+        return fileStats;
+    }
+
+    private static Supplier<BloomFilterBuilder> getBloomFilterBuilder(OrcWriterOptions options, String columnName)
+    {
+        if (options.isBloomFilterColumn(columnName)) {
+            return () -> new Utf8BloomFilterBuilder(options.getRowGroupMaxRowCount(), options.getBloomFilterFpp());
+        }
+        return NoOpBloomFilterBuilder::new;
     }
 
     private static <T> ColumnMetadata<T> toColumnMetadata(Map<OrcColumnId, T> data, int expectedSize)

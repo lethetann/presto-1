@@ -14,13 +14,14 @@
 package io.prestosql.operator;
 
 import com.google.common.collect.ImmutableList;
-import io.airlift.tpch.LineItem;
-import io.airlift.tpch.LineItemGenerator;
 import io.airlift.units.DataSize;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.PageBuilder;
+import io.prestosql.sql.planner.plan.DynamicFilterId;
 import io.prestosql.sql.planner.plan.PlanNodeId;
 import io.prestosql.testing.TestingTaskContext;
+import io.prestosql.tpch.LineItem;
+import io.prestosql.tpch.LineItemGenerator;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Measurement;
@@ -86,7 +87,7 @@ public class BenchmarkDynamicFilterSourceOperator
                     1,
                     new PlanNodeId("joinNodeId"),
                     (tupleDomain -> {}),
-                    ImmutableList.of(new DynamicFilterSourceOperator.Channel("0", BIGINT, 0)),
+                    ImmutableList.of(new DynamicFilterSourceOperator.Channel(new DynamicFilterId("0"), BIGINT, 0)),
                     getDynamicFilteringMaxPerDriverRowCount(TEST_SESSION),
                     getDynamicFilteringMaxPerDriverSize(TEST_SESSION));
         }
@@ -100,7 +101,7 @@ public class BenchmarkDynamicFilterSourceOperator
 
         public TaskContext createTaskContext()
         {
-            return TestingTaskContext.createTaskContext(executor, scheduledExecutor, TEST_SESSION, new DataSize(2, GIGABYTE));
+            return TestingTaskContext.createTaskContext(executor, scheduledExecutor, TEST_SESSION, DataSize.of(2, GIGABYTE));
         }
 
         public OperatorFactory getOperatorFactory()

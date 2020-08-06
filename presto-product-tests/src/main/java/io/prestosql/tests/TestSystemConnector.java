@@ -16,14 +16,10 @@ package io.prestosql.tests;
 import io.prestosql.tempto.ProductTest;
 import org.testng.annotations.Test;
 
-import java.sql.JDBCType;
-
 import static io.prestosql.tempto.assertions.QueryAssert.assertThat;
-import static io.prestosql.tempto.query.QueryExecutor.defaultQueryExecutor;
 import static io.prestosql.tempto.query.QueryExecutor.query;
 import static io.prestosql.tests.TestGroups.JDBC;
 import static io.prestosql.tests.TestGroups.SYSTEM_CONNECTOR;
-import static io.prestosql.tests.utils.JdbcDriverUtils.usingSimbaJdbcDriver;
 import static java.sql.JDBCType.ARRAY;
 import static java.sql.JDBCType.BIGINT;
 import static java.sql.JDBCType.TIMESTAMP;
@@ -56,12 +52,13 @@ public class TestSystemConnector
                 "  created," +
                 "  started," +
                 "  last_heartbeat," +
-                "  'end' " +
+                "  \"end\"," +
+                "  error_type," +
+                "  error_code " +
                 "FROM system.runtime.queries";
-        JDBCType arrayType = usingSimbaJdbcDriver(defaultQueryExecutor().getConnection()) ? VARCHAR : ARRAY;
         assertThat(query(sql))
-                .hasColumns(VARCHAR, VARCHAR, VARCHAR, VARCHAR, arrayType,
-                        BIGINT, BIGINT, BIGINT, TIMESTAMP, TIMESTAMP, TIMESTAMP, VARCHAR)
+                .hasColumns(VARCHAR, VARCHAR, VARCHAR, VARCHAR, ARRAY,
+                        BIGINT, BIGINT, BIGINT, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP, VARCHAR, VARCHAR)
                 .hasAnyRows();
     }
 
@@ -87,16 +84,17 @@ public class TestSystemConnector
                 "  processed_input_rows," +
                 "  output_bytes," +
                 "  output_rows," +
+                "  physical_input_bytes," +
                 "  physical_written_bytes," +
                 "  created," +
                 "  start," +
                 "  last_heartbeat," +
-                "  'end' " +
+                "  \"end\" " +
                 "FROM SYSTEM.runtime.tasks";
         assertThat(query(sql))
                 .hasColumns(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR,
                         BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT,
-                        BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, TIMESTAMP, TIMESTAMP, TIMESTAMP, VARCHAR)
+                        BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, TIMESTAMP, TIMESTAMP, TIMESTAMP, TIMESTAMP)
                 .hasAnyRows();
     }
 

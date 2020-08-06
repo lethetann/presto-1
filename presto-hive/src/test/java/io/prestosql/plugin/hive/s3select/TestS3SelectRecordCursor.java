@@ -18,7 +18,6 @@ import io.prestosql.plugin.hive.HiveColumnHandle;
 import io.prestosql.plugin.hive.HiveType;
 import org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
-import org.apache.hadoop.mapred.RecordReader;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
@@ -26,6 +25,7 @@ import java.util.Properties;
 import java.util.stream.Stream;
 
 import static io.prestosql.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
+import static io.prestosql.plugin.hive.HiveColumnHandle.createBaseColumn;
 import static io.prestosql.plugin.hive.HiveType.HIVE_INT;
 import static io.prestosql.plugin.hive.HiveType.HIVE_STRING;
 import static io.prestosql.plugin.hive.s3select.S3SelectRecordCursor.updateSplitSchema;
@@ -44,10 +44,10 @@ public class TestS3SelectRecordCursor
 {
     private static final String LAZY_SERDE_CLASS_NAME = LazySimpleSerDe.class.getName();
 
-    private static final HiveColumnHandle ARTICLE_COLUMN = new HiveColumnHandle("article", HIVE_STRING, VARCHAR, 1, REGULAR, Optional.empty());
-    private static final HiveColumnHandle AUTHOR_COLUMN = new HiveColumnHandle("author", HIVE_STRING, VARCHAR, 1, REGULAR, Optional.empty());
-    private static final HiveColumnHandle DATE_ARTICLE_COLUMN = new HiveColumnHandle("date_pub", HIVE_INT, DATE, 1, REGULAR, Optional.empty());
-    private static final HiveColumnHandle QUANTITY_COLUMN = new HiveColumnHandle("quantity", HIVE_INT, INTEGER, 1, REGULAR, Optional.empty());
+    private static final HiveColumnHandle ARTICLE_COLUMN = createBaseColumn("article", 1, HIVE_STRING, VARCHAR, REGULAR, Optional.empty());
+    private static final HiveColumnHandle AUTHOR_COLUMN = createBaseColumn("author", 1, HIVE_STRING, VARCHAR, REGULAR, Optional.empty());
+    private static final HiveColumnHandle DATE_ARTICLE_COLUMN = createBaseColumn("date_pub", 1, HIVE_INT, DATE, REGULAR, Optional.empty());
+    private static final HiveColumnHandle QUANTITY_COLUMN = createBaseColumn("quantity", 1, HIVE_INT, INTEGER, REGULAR, Optional.empty());
     private static final HiveColumnHandle[] DEFAULT_TEST_COLUMNS = {ARTICLE_COLUMN, AUTHOR_COLUMN, DATE_ARTICLE_COLUMN, QUANTITY_COLUMN};
 
     @Test(expectedExceptions = IllegalArgumentException.class, expectedExceptionsMessageRegExp = "Invalid Thrift DDL struct article \\{ \\}")
@@ -170,8 +170,8 @@ public class TestS3SelectRecordCursor
     private Properties buildSplitSchema(String ddlSerializationValue, HiveColumnHandle... columns)
     {
         Properties properties = new Properties();
-        properties.put(SERIALIZATION_LIB, LAZY_SERDE_CLASS_NAME);
-        properties.put(SERIALIZATION_DDL, ddlSerializationValue);
+        properties.setProperty(SERIALIZATION_LIB, LAZY_SERDE_CLASS_NAME);
+        properties.setProperty(SERIALIZATION_DDL, ddlSerializationValue);
         return updateSplitSchema(properties, asList(columns));
     }
 
@@ -180,10 +180,10 @@ public class TestS3SelectRecordCursor
         String expectedColumnsType = getTypes(expectedColumns);
         String expectedColumnsName = getName(expectedColumns);
         Properties propExpected = new Properties();
-        propExpected.put(LIST_COLUMNS, expectedColumnsName);
-        propExpected.put(SERIALIZATION_LIB, LAZY_SERDE_CLASS_NAME);
-        propExpected.put(SERIALIZATION_DDL, expectedDDLSerialization);
-        propExpected.put(LIST_COLUMN_TYPES, expectedColumnsType);
+        propExpected.setProperty(LIST_COLUMNS, expectedColumnsName);
+        propExpected.setProperty(SERIALIZATION_LIB, LAZY_SERDE_CLASS_NAME);
+        propExpected.setProperty(SERIALIZATION_DDL, expectedDDLSerialization);
+        propExpected.setProperty(LIST_COLUMN_TYPES, expectedColumnsType);
         return propExpected;
     }
 
@@ -202,43 +202,4 @@ public class TestS3SelectRecordCursor
                 .map(TypeInfo::getTypeName)
                 .collect(joining(","));
     }
-
-    private static final RecordReader<?, ?> MOCK_RECORD_READER = new RecordReader<Object, Object>()
-    {
-        @Override
-        public boolean next(Object key, Object value)
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Object createKey()
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Object createValue()
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public long getPos()
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public void close()
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public float getProgress()
-        {
-            throw new UnsupportedOperationException();
-        }
-    };
 }

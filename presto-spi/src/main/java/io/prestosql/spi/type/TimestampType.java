@@ -13,49 +13,73 @@
  */
 package io.prestosql.spi.type;
 
-import io.prestosql.spi.block.Block;
-import io.prestosql.spi.connector.ConnectorSession;
+import io.prestosql.spi.PrestoException;
+
+import static io.prestosql.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
+import static java.lang.String.format;
 
 /**
  * A timestamp is stored as milliseconds from 1970-01-01T00:00:00 UTC and is to be interpreted as date-time in UTC.
  * In legacy timestamp semantics, timestamp is stored as milliseconds from 1970-01-01T00:00:00 UTC and is to be
  * interpreted in session time zone.
  */
-public final class TimestampType
-        extends AbstractLongType
+public abstract class TimestampType
+        extends AbstractType
+        implements FixedWidthType
 {
-    public static final TimestampType TIMESTAMP = new TimestampType();
+    public static final int MAX_PRECISION = 12;
 
-    private TimestampType()
+    public static final int MAX_SHORT_PRECISION = 6;
+    public static final int DEFAULT_PRECISION = 3; // TODO: should be 6 per SQL spec
+
+    @Deprecated
+    public static final TimestampType TIMESTAMP = new ShortTimestampType(DEFAULT_PRECISION);
+
+    private final int precision;
+
+    public static TimestampType createTimestampType(int precision)
     {
-        super(new TypeSignature(StandardTypes.TIMESTAMP));
+        if (precision == DEFAULT_PRECISION) {
+            // Use singleton for backwards compatibility with code checking `type == TIMESTAMP`
+            return TIMESTAMP;
+        }
+
+        if (precision < 0 || precision > MAX_PRECISION) {
+            throw new PrestoException(NUMERIC_VALUE_OUT_OF_RANGE, format("TIMESTAMP precision must be in range [0, %s]", MAX_PRECISION));
+        }
+
+        if (precision <= MAX_SHORT_PRECISION) {
+            return new ShortTimestampType(precision);
+        }
+
+        return new LongTimestampType(precision);
+    }
+
+    TimestampType(int precision, Class<?> javaType)
+    {
+        super(new TypeSignature(StandardTypes.TIMESTAMP, TypeSignatureParameter.numericParameter(precision)), javaType);
+        this.precision = precision;
+    }
+
+    public int getPrecision()
+    {
+        return precision;
+    }
+
+    public final boolean isShort()
+    {
+        return precision <= MAX_SHORT_PRECISION;
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public boolean isComparable()
     {
-        if (block.isNull(position)) {
-            return null;
-        }
-
-        if (session.isLegacyTimestamp()) {
-            return new SqlTimestamp(block.getLong(position, 0), session.getTimeZoneKey());
-        }
-        else {
-            return new SqlTimestamp(block.getLong(position, 0));
-        }
+        return true;
     }
 
     @Override
-    @SuppressWarnings("EqualsWhichDoesntCheckParameterClass")
-    public boolean equals(Object other)
+    public boolean isOrderable()
     {
-        return other == TIMESTAMP;
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return getClass().hashCode();
+        return true;
     }
 }

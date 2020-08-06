@@ -337,7 +337,7 @@ public class TestHttpRemoteTask
         @Path("{taskId}")
         @Produces(MediaType.APPLICATION_JSON)
         public synchronized TaskInfo getTaskInfo(
-                @PathParam("taskId") final TaskId taskId,
+                @PathParam("taskId") TaskId taskId,
                 @HeaderParam(PRESTO_CURRENT_STATE) TaskState currentState,
                 @HeaderParam(PRESTO_MAX_WAIT) Duration maxWait,
                 @Context UriInfo uriInfo)
@@ -476,7 +476,8 @@ public class TestHttpRemoteTask
                     initialTaskStatus.getSystemMemoryReservation(),
                     initialTaskStatus.getRevocableMemoryReservation(),
                     initialTaskStatus.getFullGcCount(),
-                    initialTaskStatus.getFullGcTime());
+                    initialTaskStatus.getFullGcTime(),
+                    initialTaskStatus.getDynamicFilterDomains());
         }
     }
 }

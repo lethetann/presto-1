@@ -16,6 +16,8 @@ package io.prestosql.spi.connector;
 import io.airlift.slice.Slice;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.expression.ConnectorExpression;
+import io.prestosql.spi.expression.Constant;
+import io.prestosql.spi.expression.Variable;
 import io.prestosql.spi.predicate.TupleDomain;
 import io.prestosql.spi.security.GrantInfo;
 import io.prestosql.spi.security.PrestoPrincipal;
@@ -194,7 +196,7 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Gets all of the columns on the specified table, or an empty map if the columns can not be enumerated.
+     * Gets all of the columns on the specified table, or an empty map if the columns cannot be enumerated.
      *
      * @throws RuntimeException if table handle is no longer valid
      */
@@ -232,7 +234,7 @@ public interface ConnectorMetadata
     /**
      * Creates a schema.
      */
-    default void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties)
+    default void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties, PrestoPrincipal owner)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating schemas");
     }
@@ -256,6 +258,14 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Sets the user/role on the specified schema.
+     */
+    default void setSchemaAuthorization(ConnectorSession session, String source, PrestoPrincipal principal)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support setting an owner on a schema");
+    }
+
+    /**
      * Creates a table using the specified table metadata.
      *
      * @throws PrestoException with {@code ALREADY_EXISTS} if the table already exists and {@param ignoreExisting} is not set
@@ -268,7 +278,7 @@ public interface ConnectorMetadata
     /**
      * Drops the specified table
      *
-     * @throws RuntimeException if the table can not be dropped or table handle is no longer valid
+     * @throws RuntimeException if the table cannot be dropped or table handle is no longer valid
      */
     default void dropTable(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
@@ -289,6 +299,14 @@ public interface ConnectorMetadata
     default void setTableComment(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<String> comment)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support setting table comments");
+    }
+
+    /**
+     * Comments to the specified column
+     */
+    default void setColumnComment(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, Optional<String> comment)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support setting column comments");
     }
 
     /**
@@ -390,22 +408,39 @@ public interface ConnectorMetadata
     }
 
     /**
-     * Start a SELECT/UPDATE/INSERT/DELETE query. This notification is triggered after the planning phase completes.
+     * Start a query. This notification is triggered before any other metadata access.
      */
     default void beginQuery(ConnectorSession session) {}
 
     /**
-     * Cleanup after a SELECT/UPDATE/INSERT/DELETE query. This is the very last notification after the query finishes, whether it succeeds or fails.
+     * Cleanup after a query. This is the very last notification after the query finishes, whether it succeeds or fails.
      * An exception thrown in this method will not affect the result of the query.
      */
     default void cleanupQuery(ConnectorSession session) {}
 
     /**
-     * Begin insert query
+     * @deprecated Use {@link #beginInsert(ConnectorSession, ConnectorTableHandle, List)} instead.
      */
+    @Deprecated
     default ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support inserts");
+    }
+
+    /**
+     * Begin insert query
+     */
+    default ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle, List<ColumnHandle> columns)
+    {
+        return beginInsert(session, tableHandle);
+    }
+
+    /**
+     * @return whether connector handles missing columns during insert
+     */
+    default boolean supportsMissingColumnsOnInsert()
+    {
+        return false;
     }
 
     /**
@@ -497,6 +532,22 @@ public interface ConnectorMetadata
     }
 
     /**
+     * Gets the schema properties for the specified schema.
+     */
+    default Map<String, Object> getSchemaProperties(ConnectorSession session, CatalogSchemaName schemaName)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support schema properties");
+    }
+
+    /**
+     * Get the schema properties for the specified schema.
+     */
+    default Optional<PrestoPrincipal> getSchemaOwner(ConnectorSession session, CatalogSchemaName schemaName)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support schema ownership");
+    }
+
+    /**
      * @return whether delete without table scan is supported
      */
     default boolean supportsMetadataDelete(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorTableLayoutHandle tableLayoutHandle)
@@ -576,11 +627,20 @@ public interface ConnectorMetadata
     }
 
     /**
+     * List all role grants in the specified catalog,
+     * optionally filtered by passed role, grantee, and limit predicates.
+     */
+    default Set<RoleGrant> listAllRoleGrants(ConnectorSession session, Optional<Set<String>> roles, Optional<Set<String>> grantees, OptionalLong limit)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
      * Grants the specified roles to the specified grantees
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean withAdminOption, Optional<PrestoPrincipal> grantor)
+    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOption, Optional<PrestoPrincipal> grantor)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
     }
@@ -590,7 +650,7 @@ public interface ConnectorMetadata
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOptionFor, Optional<PrestoPrincipal> grantor)
+    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOption, Optional<PrestoPrincipal> grantor)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
     }
@@ -789,4 +849,120 @@ public interface ConnectorMetadata
     {
         return Optional.empty();
     }
+
+    /**
+     * Attempt to push down the aggregates into the table.
+     * <p>
+     * Connectors can indicate whether they don't support aggregate pushdown or that the action had no effect
+     * by returning {@link Optional#empty()}. Connectors should expect this method may be called multiple times.
+     * </p>
+     * <b>Note</b>: it's critical for connectors to return {@link Optional#empty()} if calling this method has no effect for that
+     * invocation, even if the connector generally supports pushdown. Doing otherwise can cause the optimizer
+     * to loop indefinitely.
+     * <p>
+     * If the method returns a result, the list of assignments in the result will be merged with existing assignments. The projections
+     * returned by the method must have the same order as the given input list of aggregates.
+     * </p>
+     * As an example, given the following plan:
+     *
+     * <pre>
+     *  - aggregation  (GROUP BY c)
+     *          variable0 = agg_fn1(a)
+     *          variable1 = agg_fn2(b, 2)
+     *          variable2 = c
+     *          - scan (TH0)
+     *              a = CH0
+     *              b = CH1
+     *              c = CH2
+     * </pre>
+     * <p>
+     * The optimizer would call this method with the following arguments:
+     *
+     * <pre>
+     *      handle = TH0
+     *      aggregates = [
+     *              { functionName=agg_fn1, outputType = «some presto type» inputs = [{@link Variable} a]} ,
+     *              { functionName=agg_fn2, outputType = «some presto type» inputs = [{@link Variable} b, {@link Constant} 2]}
+     *      ]
+     *      groupingSets=[[{@link ColumnHandle} CH2]]
+     *      assignments = {a = CH0, b = CH1, c = CH2}
+     * </pre>
+     * </p>
+     *
+     * Assuming the connector knows how to handle {@code agg_fn1(...)} and {@code agg_fn2(...)}, it would return:
+     * <pre>
+     *
+     * {@link AggregationApplicationResult} {
+     *      handle = TH1
+     *      projections = [{@link Variable} synthetic_name0, {@link Variable} synthetic_name1] -- <b>The order in the list must be same as input list of aggregates</b>
+     *      assignments = {
+     *          synthetic_name0 = CH3 (synthetic column for agg_fn1(a))
+     *          synthetic_name1 = CH4 (synthetic column for agg_fn2(b,2))
+     *      }
+     * }
+     * </pre>
+     *
+     * if the connector only knows how to handle {@code agg_fn1(...)}, but not {@code agg_fn2}, it should return {@link Optional#empty()}.
+     *
+     * <p>
+     * Another example is where the connector wants to handle the aggregate function by pointing to a pre-materialized table.
+     * In this case the input can stay same as in the above example and the connector can return
+     * <pre>
+     * {@link AggregationApplicationResult} {
+     *      handle = TH1 (could capture information about which pre-materialized table to use)
+     *      projections = [{@link Variable} synthetic_name0, {@link Variable} synthetic_name1] -- <b>The order in the list must be same as input list of aggregates</b>
+     *      assignments = {
+     *          synthetic_name0 = CH3 (reference to the column in pre-materialized table that has agg_fn1(a) calculated)
+     *          synthetic_name1 = CH4 (reference to the column in pre-materialized table that has agg_fn2(b,2) calculated)
+     *          synthetic_name2 = CH5 (reference to the column in pre-materialized table that has the group by column c)
+     *      }
+     *      groupingColumnMapping = {
+     *          CH2 -> CH5 (CH2 in the original assignment should now be replaced by CH5 in the new assignment)
+     *      }
+     * }
+     * </pre>
+     * </p>
+     */
+    default Optional<AggregationApplicationResult<ConnectorTableHandle>> applyAggregation(
+            ConnectorSession session,
+            ConnectorTableHandle handle,
+            List<AggregateFunction> aggregates,
+            Map<String, ColumnHandle> assignments,
+            List<List<ColumnHandle>> groupingSets)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Attempt to push down the TopN into the table scan.
+     * <p>
+     * Connectors can indicate whether they don't support topN pushdown or that the action had no effect
+     * by returning {@link Optional#empty()}. Connectors should expect this method may be called multiple times.
+     * </p>
+     * <b>Note</b>: it's critical for connectors to return {@link Optional#empty()} if calling this method has no effect for that
+     * invocation, even if the connector generally supports topN pushdown. Doing otherwise can cause the optimizer
+     * to loop indefinitely.
+     * <p>
+     * If the connector can handle TopN Pushdown and guarantee it will produce fewer rows than it should return a
+     * non-empty result with "topN guaranteed" flag set to true.
+     * @return
+     */
+    default Optional<TopNApplicationResult<ConnectorTableHandle>> applyTopN(
+            ConnectorSession session,
+            ConnectorTableHandle handle,
+            long topNCount,
+            List<SortItem> sortItems,
+            Map<String, ColumnHandle> assignments)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Allows the connector to reject the table scan produced by the planner.
+     * <p>
+     * Connectors can choose to reject a query based on the table scan potentially being too expensive, for example
+     * if no filtering is done on a partition column.
+     * <p>
+     */
+    default void validateScan(ConnectorSession session, ConnectorTableHandle handle) {}
 }

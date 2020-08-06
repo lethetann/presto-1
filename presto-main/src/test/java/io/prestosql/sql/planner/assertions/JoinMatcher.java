@@ -52,7 +52,7 @@ final class JoinMatcher
     {
         this.joinType = requireNonNull(joinType, "joinType is null");
         this.equiCriteria = requireNonNull(equiCriteria, "equiCriteria is null");
-        this.filter = requireNonNull(filter, "filter can not be null");
+        this.filter = requireNonNull(filter, "filter cannot be null");
         this.distributionType = requireNonNull(distributionType, "distributionType is null");
         this.spillable = requireNonNull(spillable, "spillable is null");
         this.dynamicFilter = requireNonNull(dynamicFilter, "dynamicFilter is null");
@@ -81,7 +81,7 @@ final class JoinMatcher
         }
 
         if (filter.isPresent()) {
-            if (!joinNode.getFilter().isPresent()) {
+            if (joinNode.getFilter().isEmpty()) {
                 return NO_MATCH;
             }
             if (!new ExpressionVerifier(symbolAliases).process(joinNode.getFilter().get(), filter.get())) {

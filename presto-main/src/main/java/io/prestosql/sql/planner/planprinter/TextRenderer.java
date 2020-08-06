@@ -13,10 +13,10 @@
  */
 package io.prestosql.sql.planner.planprinter;
 
-import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.prestosql.cost.PlanCostEstimate;
+import io.prestosql.cost.PlanNodeStatsAndCostSummary;
 import io.prestosql.cost.PlanNodeStatsEstimate;
 import io.prestosql.sql.planner.Symbol;
 import io.prestosql.sql.planner.planprinter.NodeRepresentation.TypedSymbol;
@@ -30,13 +30,13 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.lang.Double.NEGATIVE_INFINITY;
 import static java.lang.Double.POSITIVE_INFINITY;
 import static java.lang.Double.isFinite;
 import static java.lang.Double.isNaN;
 import static java.lang.String.format;
 import static java.util.Collections.emptyMap;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 
@@ -74,6 +74,11 @@ public class TextRenderer
 
         output.append(indentMultilineString("Layout: [" + columns + "]\n", indent.detailIndent()));
 
+        String reorderJoinStatsAndCost = printReorderJoinStatsAndCost(node);
+        if (!reorderJoinStatsAndCost.isEmpty()) {
+            output.append(indentMultilineString(reorderJoinStatsAndCost, indent.detailIndent()));
+        }
+
         String estimates = printEstimates(plan, node);
         if (!estimates.isEmpty()) {
             output.append(indentMultilineString(estimates, indent.detailIndent()));
@@ -109,7 +114,7 @@ public class TextRenderer
     private String printStats(PlanRepresentation plan, NodeRepresentation node)
     {
         StringBuilder output = new StringBuilder();
-        if (!node.getStats().isPresent() || !(plan.getTotalCpuTime().isPresent() && plan.getTotalScheduledTime().isPresent())) {
+        if (node.getStats().isEmpty() || !(plan.getTotalCpuTime().isPresent() && plan.getTotalScheduledTime().isPresent())) {
             return "";
         }
 
@@ -214,6 +219,25 @@ public class TextRenderer
         return ImmutableMap.of();
     }
 
+    private String printReorderJoinStatsAndCost(NodeRepresentation node)
+    {
+        if (verbose && node.getReorderJoinStatsAndCost().isPresent()) {
+            return format("Reorder joins cost : %s\n", formatPlanNodeStatsAndCostSummary(node.getReorderJoinStatsAndCost().get()));
+        }
+        return "";
+    }
+
+    private String formatPlanNodeStatsAndCostSummary(PlanNodeStatsAndCostSummary stats)
+    {
+        requireNonNull(stats, "stats is null");
+        return format("{rows: %s (%s), cpu: %s, memory: %s, network: %s}",
+                formatAsLong(stats.getOutputRowCount()),
+                formatAsDataSize(stats.getOutputSizeInBytes()),
+                formatAsCpuCost(stats.getCpuCost()),
+                formatAsDataSize(stats.getMemoryCost()),
+                formatAsDataSize(stats.getNetworkCost()));
+    }
+
     private String printEstimates(PlanRepresentation plan, NodeRepresentation node)
     {
         if (node.getEstimatedStats().stream().allMatch(PlanNodeStatsEstimate::isOutputRowCountUnknown) &&
@@ -282,7 +306,7 @@ public class TextRenderer
             return "-\u221E";
         }
 
-        return DataSize.succinctDataSize(value, BYTE).toString();
+        return DataSize.succinctBytes(Math.round(value)).toString();
     }
 
     static String formatDouble(double value)
@@ -302,7 +326,7 @@ public class TextRenderer
 
     static String indentString(int indent)
     {
-        return Strings.repeat("    ", indent);
+        return "    ".repeat(indent);
     }
 
     private static String indentMultilineString(String string, String indent)
@@ -370,7 +394,7 @@ public class TextRenderer
         {
             checkArgument(text.length() <= length, "text is longer that length");
 
-            return text + Strings.repeat(" ", length - text.length());
+            return text + " ".repeat(length - text.length());
         }
     }
 }

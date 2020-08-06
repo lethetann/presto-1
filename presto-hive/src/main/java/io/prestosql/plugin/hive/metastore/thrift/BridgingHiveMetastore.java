@@ -49,6 +49,8 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.prestosql.plugin.hive.metastore.MetastoreUtil.isAvroTableWithSchemaSet;
 import static io.prestosql.plugin.hive.metastore.MetastoreUtil.verifyCanDropColumn;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.csvSchemaFields;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiDatabase;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreApiTable;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isAvroTableWithSchemaSet;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isCsvTable;
@@ -85,8 +87,11 @@ public class BridgingHiveMetastore
     public Optional<Table> getTable(HiveIdentity identity, String databaseName, String tableName)
     {
         return delegate.getTable(identity, databaseName, tableName).map(table -> {
-            if (isAvroTableWithSchemaSet(table) || isCsvTable(table)) {
-                return fromMetastoreApiTable(table, delegate.getFields(identity, databaseName, tableName).get());
+            if (isAvroTableWithSchemaSet(table)) {
+                return fromMetastoreApiTable(table, delegate.getFields(identity, databaseName, tableName).orElseThrow());
+            }
+            if (isCsvTable(table)) {
+                return fromMetastoreApiTable(table, csvSchemaFields(table.getSd().getCols()));
             }
             return fromMetastoreApiTable(table);
         });
@@ -99,15 +104,20 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public PartitionStatistics getTableStatistics(HiveIdentity identity, String databaseName, String tableName)
+    public PartitionStatistics getTableStatistics(HiveIdentity identity, Table table)
     {
-        return delegate.getTableStatistics(identity, databaseName, tableName);
+        return delegate.getTableStatistics(identity, toMetastoreApiTable(table));
     }
 
     @Override
-    public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, String databaseName, String tableName, Set<String> partitionNames)
+    public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, Table table, List<Partition> partitions)
     {
-        return delegate.getPartitionStatistics(identity, databaseName, tableName, partitionNames);
+        return delegate.getPartitionStatistics(
+                identity,
+                toMetastoreApiTable(table),
+                partitions.stream()
+                        .map(ThriftMetastoreUtil::toMetastoreApiPartition)
+                        .collect(toImmutableList()));
     }
 
     @Override
@@ -117,9 +127,9 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void updatePartitionStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
+    public void updatePartitionStatistics(HiveIdentity identity, Table table, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
     {
-        delegate.updatePartitionStatistics(identity, databaseName, tableName, partitionName, update);
+        delegate.updatePartitionStatistics(identity, toMetastoreApiTable(table), partitionName, update);
     }
 
     @Override
@@ -168,6 +178,20 @@ public class BridgingHiveMetastore
     }
 
     @Override
+    public void setDatabaseOwner(HiveIdentity identity, String databaseName, HivePrincipal principal)
+    {
+        Database database = fromMetastoreApiDatabase(delegate.getDatabase(databaseName)
+                .orElseThrow(() -> new SchemaNotFoundException(databaseName)));
+
+        Database newDatabase = Database.builder(database)
+                .setOwnerName(principal.getName())
+                .setOwnerType(principal.getType())
+                .build();
+
+        delegate.alterDatabase(identity, databaseName, toMetastoreApiDatabase(newDatabase));
+    }
+
+    @Override
     public void createTable(HiveIdentity identity, Table table, PrincipalPrivileges principalPrivileges)
     {
         delegate.createTable(identity, toMetastoreApiTable(table, principalPrivileges));
@@ -189,7 +213,7 @@ public class BridgingHiveMetastore
     public void renameTable(HiveIdentity identity, String databaseName, String tableName, String newDatabaseName, String newTableName)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(identity, databaseName, tableName);
-        if (!source.isPresent()) {
+        if (source.isEmpty()) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
         }
         org.apache.hadoop.hive.metastore.api.Table table = source.get();
@@ -202,7 +226,7 @@ public class BridgingHiveMetastore
     public void commentTable(HiveIdentity identity, String databaseName, String tableName, Optional<String> comment)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(identity, databaseName, tableName);
-        if (!source.isPresent()) {
+        if (source.isEmpty()) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
         }
         org.apache.hadoop.hive.metastore.api.Table table = source.get();
@@ -217,10 +241,33 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void addColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
+    public void commentColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, Optional<String> comment)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(identity, databaseName, tableName);
         if (!source.isPresent()) {
+            throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
+        }
+        org.apache.hadoop.hive.metastore.api.Table table = source.get();
+
+        for (FieldSchema fieldSchema : table.getSd().getCols()) {
+            if (fieldSchema.getName().equals(columnName)) {
+                if (comment.isPresent()) {
+                    fieldSchema.setComment(comment.get());
+                }
+                else {
+                    fieldSchema.unsetComment();
+                }
+            }
+        }
+
+        alterTable(identity, databaseName, tableName, table);
+    }
+
+    @Override
+    public void addColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
+    {
+        Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(identity, databaseName, tableName);
+        if (source.isEmpty()) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
         }
         org.apache.hadoop.hive.metastore.api.Table table = source.get();
@@ -233,7 +280,7 @@ public class BridgingHiveMetastore
     public void renameColumn(HiveIdentity identity, String databaseName, String tableName, String oldColumnName, String newColumnName)
     {
         Optional<org.apache.hadoop.hive.metastore.api.Table> source = delegate.getTable(identity, databaseName, tableName);
-        if (!source.isPresent()) {
+        if (source.isEmpty()) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
         }
         org.apache.hadoop.hive.metastore.api.Table table = source.get();
@@ -353,15 +400,21 @@ public class BridgingHiveMetastore
     }
 
     @Override
-    public void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean withAdminOption, HivePrincipal grantor)
+    public void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor)
     {
-        delegate.grantRoles(roles, grantees, withAdminOption, grantor);
+        delegate.grantRoles(roles, grantees, adminOption, grantor);
     }
 
     @Override
-    public void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOptionFor, HivePrincipal grantor)
+    public void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor)
     {
-        delegate.revokeRoles(roles, grantees, adminOptionFor, grantor);
+        delegate.revokeRoles(roles, grantees, adminOption, grantor);
+    }
+
+    @Override
+    public Set<RoleGrant> listGrantedPrincipals(String role)
+    {
+        return delegate.listGrantedPrincipals(role);
     }
 
     @Override

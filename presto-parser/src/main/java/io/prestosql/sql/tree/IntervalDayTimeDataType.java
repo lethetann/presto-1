@@ -39,7 +39,12 @@ public class IntervalDayTimeDataType
 
     public IntervalDayTimeDataType(NodeLocation location, Field from, Field to)
     {
-        super(Optional.of(location));
+        this(Optional.of(location), from, to);
+    }
+
+    public IntervalDayTimeDataType(Optional<NodeLocation> location, Field from, Field to)
+    {
+        super(location);
         this.from = requireNonNull(from, "from is null");
         this.to = requireNonNull(to, "to is null");
     }
@@ -84,5 +89,17 @@ public class IntervalDayTimeDataType
     public int hashCode()
     {
         return Objects.hash(from, to);
+    }
+
+    @Override
+    public boolean shallowEquals(Node other)
+    {
+        if (!sameClass(this, other)) {
+            return false;
+        }
+
+        IntervalDayTimeDataType otherType = (IntervalDayTimeDataType) other;
+        return from.equals(otherType.from) &&
+                to == otherType.to;
     }
 }

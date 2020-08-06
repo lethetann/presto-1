@@ -15,7 +15,6 @@ package io.prestosql.plugin.phoenix;
 
 import com.google.common.collect.ImmutableList;
 import io.prestosql.spi.session.PropertyMetadata;
-import io.prestosql.spi.type.TypeManager;
 import org.apache.hadoop.util.StringUtils;
 
 import javax.inject.Inject;
@@ -25,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.spi.session.PropertyMetadata.booleanProperty;
 import static io.prestosql.spi.session.PropertyMetadata.integerProperty;
 import static io.prestosql.spi.session.PropertyMetadata.stringProperty;
@@ -52,7 +52,7 @@ public final class PhoenixTableProperties
     private final List<PropertyMetadata<?>> tableProperties;
 
     @Inject
-    public PhoenixTableProperties(TypeManager typeManager)
+    public PhoenixTableProperties()
     {
         tableProperties = ImmutableList.of(
                 stringProperty(
@@ -149,7 +149,10 @@ public final class PhoenixTableProperties
         if (rowkeysCsv == null) {
             return Optional.empty();
         }
-        return Optional.of(Arrays.asList(StringUtils.split(rowkeysCsv, ',')));
+
+        return Optional.of(Arrays.stream(StringUtils.split(rowkeysCsv, ','))
+                .map(String::trim)
+                .collect(toImmutableList()));
     }
 
     public static Optional<Boolean> getDisableWal(Map<String, Object> tableProperties)

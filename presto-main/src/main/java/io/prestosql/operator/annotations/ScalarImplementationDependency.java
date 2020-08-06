@@ -13,13 +13,15 @@
  */
 package io.prestosql.operator.annotations;
 
-import io.prestosql.metadata.BoundVariables;
-import io.prestosql.metadata.Metadata;
-import io.prestosql.metadata.ResolvedFunction;
+import io.prestosql.metadata.FunctionBinding;
+import io.prestosql.metadata.FunctionDependencies;
+import io.prestosql.metadata.FunctionInvoker;
 import io.prestosql.spi.function.InvocationConvention;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Optional;
+
+import static java.util.Objects.requireNonNull;
 
 public abstract class ScalarImplementationDependency
         implements ImplementationDependency
@@ -28,19 +30,18 @@ public abstract class ScalarImplementationDependency
 
     protected ScalarImplementationDependency(Optional<InvocationConvention> invocationConvention)
     {
-        this.invocationConvention = invocationConvention;
+        this.invocationConvention = requireNonNull(invocationConvention, "invocationConvention is null");
+        if (invocationConvention.map(InvocationConvention::supportsInstanceFactor).orElse(false)) {
+            throw new IllegalArgumentException(getClass().getSimpleName() + " does not support instance functions");
+        }
     }
 
-    protected abstract ResolvedFunction getResolvedFunction(BoundVariables boundVariables, Metadata metadata);
+    protected abstract FunctionInvoker getInvoker(FunctionBinding functionBinding, FunctionDependencies functionDependencies, Optional<InvocationConvention> invocationConvention);
 
     @Override
-    public MethodHandle resolve(BoundVariables boundVariables, Metadata metadata)
+    public MethodHandle resolve(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
-        ResolvedFunction resolvedFunction = getResolvedFunction(boundVariables, metadata);
-        if (invocationConvention.isPresent()) {
-            return metadata.getFunctionInvokerProvider().createFunctionInvoker(resolvedFunction, invocationConvention).methodHandle();
-        }
-        return metadata.getScalarFunctionImplementation(resolvedFunction).getMethodHandle();
+        return getInvoker(functionBinding, functionDependencies, invocationConvention).getMethodHandle();
     }
 
     @Override

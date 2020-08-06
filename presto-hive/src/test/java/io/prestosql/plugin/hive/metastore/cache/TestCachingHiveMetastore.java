@@ -14,10 +14,13 @@
 package io.prestosql.plugin.hive.metastore.cache;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import io.airlift.units.Duration;
-import io.prestosql.plugin.hive.authentication.HiveAuthenticationConfig;
+import io.prestosql.plugin.hive.HiveConfig;
+import io.prestosql.plugin.hive.HiveMetastoreClosure;
+import io.prestosql.plugin.hive.PartitionStatistics;
 import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Partition;
 import io.prestosql.plugin.hive.metastore.Table;
@@ -33,21 +36,27 @@ import org.testng.annotations.Test;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
+import static io.prestosql.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createIntegerColumnStatistics;
 import static io.prestosql.plugin.hive.metastore.cache.CachingHiveMetastore.cachingHiveMetastore;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.BAD_DATABASE;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.BAD_PARTITION;
+import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_COLUMN;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_DATABASE;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_PARTITION1;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_PARTITION2;
+import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_PARTITION_VALUES1;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_ROLES;
 import static io.prestosql.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TEST_TABLE;
 import static io.prestosql.testing.TestingConnectorSession.SESSION;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static java.util.function.Function.identity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
@@ -58,6 +67,9 @@ import static org.testng.Assert.assertTrue;
 public class TestCachingHiveMetastore
 {
     private static final HiveIdentity IDENTITY = new HiveIdentity(SESSION);
+    private static final PartitionStatistics TEST_STATS = PartitionStatistics.builder()
+            .setColumnStatistics(ImmutableMap.of(TEST_COLUMN, createIntegerColumnStatistics(OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty(), OptionalLong.empty())))
+            .build();
 
     private MockThriftMetastoreClient mockClient;
     private CachingHiveMetastore metastore;
@@ -81,7 +93,7 @@ public class TestCachingHiveMetastore
     private ThriftHiveMetastore createThriftHiveMetastore()
     {
         MetastoreLocator metastoreLocator = new MockMetastoreLocator(mockClient);
-        return new ThriftHiveMetastore(metastoreLocator, new ThriftMetastoreConfig(), new HiveAuthenticationConfig());
+        return new ThriftHiveMetastore(metastoreLocator, new HiveConfig(), new ThriftMetastoreConfig(), HDFS_ENVIRONMENT, false);
     }
 
     @Test
@@ -222,7 +234,6 @@ public class TestCachingHiveMetastore
 
     @Test
     public void testListRoles()
-            throws Exception
     {
         assertEquals(mockClient.getAccessCount(), 0);
 
@@ -246,6 +257,47 @@ public class TestCachingHiveMetastore
 
         assertEquals(metastore.listRoles(), TEST_ROLES);
         assertEquals(mockClient.getAccessCount(), 4);
+    }
+
+    @Test
+    public void testGetTableStatistics()
+    {
+        assertEquals(mockClient.getAccessCount(), 0);
+
+        Table table = metastore.getTable(IDENTITY, TEST_DATABASE, TEST_TABLE).get();
+        assertEquals(mockClient.getAccessCount(), 1);
+
+        assertEquals(metastore.getTableStatistics(IDENTITY, table), TEST_STATS);
+        assertEquals(mockClient.getAccessCount(), 2);
+    }
+
+    @Test
+    public void testGetPartitionStatistics()
+    {
+        assertEquals(mockClient.getAccessCount(), 0);
+
+        Table table = metastore.getTable(IDENTITY, TEST_DATABASE, TEST_TABLE).get();
+        assertEquals(mockClient.getAccessCount(), 1);
+
+        Partition partition = metastore.getPartition(IDENTITY, table, TEST_PARTITION_VALUES1).get();
+        assertEquals(mockClient.getAccessCount(), 2);
+
+        assertEquals(metastore.getPartitionStatistics(IDENTITY, table, ImmutableList.of(partition)), ImmutableMap.of(TEST_PARTITION1, TEST_STATS));
+        assertEquals(mockClient.getAccessCount(), 3);
+    }
+
+    @Test
+    public void testUpdatePartitionStatistics()
+    {
+        assertEquals(mockClient.getAccessCount(), 0);
+
+        HiveMetastoreClosure hiveMetastoreClosure = new HiveMetastoreClosure(metastore);
+
+        Table table = hiveMetastoreClosure.getTable(IDENTITY, TEST_DATABASE, TEST_TABLE).get();
+        assertEquals(mockClient.getAccessCount(), 1);
+
+        hiveMetastoreClosure.updatePartitionStatistics(IDENTITY, table.getDatabaseName(), table.getTableName(), TEST_PARTITION1, identity());
+        assertEquals(mockClient.getAccessCount(), 5);
     }
 
     @Test

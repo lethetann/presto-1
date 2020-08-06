@@ -24,6 +24,8 @@ import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
 
+import java.time.Instant;
+
 import static io.prestosql.spi.StandardErrorCode.INVALID_LITERAL;
 import static io.prestosql.spi.function.OperatorType.INDETERMINATE;
 import static io.prestosql.spi.type.BooleanType.BOOLEAN;
@@ -166,7 +168,7 @@ public abstract class TestTimeBase
         // For simplicity we have to use time zone that is going forward when entering DST zone with 1970-01-01
         Session session = Session.builder(this.session)
                 .setTimeZoneKey(getTimeZoneKey("Australia/Sydney"))
-                .setStartTime(new DateTime(2017, 10, 1, 1, 59, 59, 999, getDateTimeZone(getTimeZoneKey("Australia/Sydney"))).getMillis())
+                .setStart(Instant.ofEpochMilli(new DateTime(2017, 10, 1, 1, 59, 59, 999, getDateTimeZone(getTimeZoneKey("Australia/Sydney"))).getMillis()))
                 .build();
         try (FunctionAssertions localAssertions = new FunctionAssertions(session)) {
             localAssertions.assertFunctionString("cast(TIME '12:00:00.000' as time with time zone)", TIME_WITH_TIME_ZONE, "12:00:00.000 Australia/Sydney");
@@ -178,7 +180,7 @@ public abstract class TestTimeBase
     {
         assertFunction("cast(TIME '03:04:05.321' as timestamp)",
                 TIMESTAMP,
-                sqlTimestampOf(1970, 1, 1, 3, 4, 5, 321, session));
+                sqlTimestampOf(3, 1970, 1, 1, 3, 4, 5, 321, session));
     }
 
     @Test
@@ -186,7 +188,7 @@ public abstract class TestTimeBase
     {
         assertFunction("cast(TIME '03:04:05.321' as timestamp with time zone)",
                 TIMESTAMP_WITH_TIME_ZONE,
-                new SqlTimestampWithTimeZone(new DateTime(1970, 1, 1, 3, 4, 5, 321, DATE_TIME_ZONE).getMillis(), TIME_ZONE_KEY));
+                SqlTimestampWithTimeZone.newInstance(3, new DateTime(1970, 1, 1, 3, 4, 5, 321, DATE_TIME_ZONE).getMillis(), 0, TIME_ZONE_KEY));
     }
 
     @Test

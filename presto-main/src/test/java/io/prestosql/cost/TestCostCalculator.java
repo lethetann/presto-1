@@ -103,7 +103,7 @@ public class TestCostCalculator
 
         session = testSessionBuilder().setCatalog("tpch").build();
 
-        localQueryRunner = new LocalQueryRunner(session);
+        localQueryRunner = LocalQueryRunner.create(session);
         localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(), ImmutableMap.of());
 
         planFragmenter = new PlanFragmenter(localQueryRunner.getMetadata(), localQueryRunner.getNodePartitioningManager(), new QueryManagerConfig());
@@ -846,16 +846,15 @@ public class TestCostCalculator
                 left,
                 right,
                 criteria.build(),
-                ImmutableList.<Symbol>builder()
-                        .addAll(left.getOutputSymbols())
-                        .addAll(right.getOutputSymbols())
-                        .build(),
+                left.getOutputSymbols(),
+                right.getOutputSymbols(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.of(distributionType),
                 Optional.empty(),
-                ImmutableMap.of());
+                ImmutableMap.of(),
+                Optional.empty());
     }
 
     private SubPlan fragment(Plan plan)

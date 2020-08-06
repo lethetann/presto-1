@@ -21,38 +21,17 @@ Presto Server Configuration
 Environment Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. _ldap_server:
-
 Secure LDAP
 ~~~~~~~~~~~
 
 Presto requires Secure LDAP (LDAPS), so make sure you have TLS
 enabled on your LDAP server.
 
-TLS Configuration on Presto Coordinator
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-You need to import the LDAP server's TLS certificate to the default Java
-truststore of the Presto coordinator to secure TLS connection. You can use
-the following example ``keytool`` command to import the certificate
-``ldap_server.crt``, to the truststore on the coordinator.
-
-.. code-block:: none
-
-    $ keytool -import -keystore <JAVA_HOME>/jre/lib/security/cacerts -trustcacerts -alias ldap_server -file ldap_server.crt
-
-In addition to this, access to the Presto coordinator should be
-through HTTPS. You can do that by creating a :ref:`server_java_keystore` on
-the coordinator.
-
 Presto Coordinator Node Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-You must make the following changes to the environment prior to configuring the
-Presto coordinator to use LDAP authentication and HTTPS.
-
- * :ref:`ldap_server`
- * :ref:`server_java_keystore`
+Access to the Presto coordinator should be through HTTPS. You can do that
+by creating a :ref:`server_java_keystore` on the coordinator.
 
 You also need to make changes to the Presto configuration files.
 LDAP authentication is configured on the coordinator in two parts.
@@ -76,24 +55,29 @@ to the coordinator's ``config.properties`` file:
     http-server.https.keystore.path=/etc/presto_keystore.jks
     http-server.https.keystore.key=keystore_password
 
-======================================================= ======================================================
-Property                                                Description
-======================================================= ======================================================
-``http-server.authentication.type``                     Enable password authentication for the Presto
-                                                        coordinator. Must be set to ``PASSWORD``.
-``http-server.https.enabled``                           Enables HTTPS access for the Presto coordinator.
-                                                        Should be set to ``true``. Default value is
-                                                        ``false``.
-``http-server.https.port``                              HTTPS server port.
-``http-server.https.keystore.path``                     The location of the Java Keystore file that will be
-                                                        used to secure TLS.
-``http-server.https.keystore.key``                      The password for the keystore. This must match the
-                                                        password you specified when creating the keystore.
-``http-server.authentication.allow-forwarded-https``    Enable treating forwarded HTTPS requests over HTTP
-                                                        as secure.  Requires the ``X-Forwarded-Proto`` header
-                                                        to be set to ``https`` on forwarded requests.
-                                                        Default value is ``false``.
-======================================================= ======================================================
+============================================================= ======================================================
+Property                                                      Description
+============================================================= ======================================================
+``http-server.authentication.type``                           Enable password authentication for the Presto
+                                                              coordinator. Must be set to ``PASSWORD``.
+``http-server.https.enabled``                                 Enables HTTPS access for the Presto coordinator.
+                                                              Should be set to ``true``. Default value is
+                                                              ``false``.
+``http-server.https.port``                                    HTTPS server port.
+``http-server.https.keystore.path``                           The location of the Java Keystore file that will be
+                                                              used to secure TLS.
+``http-server.https.keystore.key``                            The password for the keystore. This must match the
+                                                              password you specified when creating the keystore.
+``http-server.authentication.allow-forwarded-https``          Enable treating forwarded HTTPS requests over HTTP
+                                                              as secure.  Requires the ``X-Forwarded-Proto`` header
+                                                              to be set to ``https`` on forwarded requests.
+                                                              Default value is ``false``.
+``http-server.authentication.password.user-mapping.pattern``  Regex to match against user.  If matched, user will be
+                                                              replaced with first regex group. If not matched,
+                                                              authentication is denied.  Default is ``(.*)``.
+``http-server.authentication.password.user-mapping.file``     File containing rules for mapping user.  See
+                                                              :doc:`/security/user-mapping` for more information.
+============================================================= ======================================================
 
 Password Authenticator Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -105,6 +89,7 @@ Password authentication needs to be configured to use LDAP. Create an
 
     password-authenticator.name=ldap
     ldap.url=ldaps://ldap-server:636
+    ldap.ssl-trust-certificate=/path/to/ldap_server.crt
     ldap.user-bind-pattern=<Refer below for usage>
 
 ======================================================= ======================================================
@@ -112,11 +97,15 @@ Property                                                Description
 ======================================================= ======================================================
 ``ldap.url``                                            The url to the LDAP server. The url scheme must be
                                                         ``ldaps://`` since Presto allows only Secure LDAP.
+``ldap.ssl-trust-certificate``                          The path to the PEM encoded trust certificate  for the
+                                                        LDAP server. This file should contain the LDAP
+                                                        server's certificate or its certificate authority.
 ``ldap.user-bind-pattern``                              This property can be used to specify the LDAP user
                                                         bind string for password authentication. This property
                                                         must contain the pattern ``${USER}``, which is
                                                         replaced by the actual username during the password
                                                         authentication. Example: ``${USER}@corp.example.com``.
+``ldap.cache-ttl``                                      LDAP cache duration. Defaults to ``1h``.
 ======================================================= ======================================================
 
 Based on the LDAP server implementation type, the property
@@ -174,6 +163,34 @@ Property                                                Description
 
 Based on the LDAP server implementation type, the property
 ``ldap.group-auth-pattern`` can be used as described below.
+
+Authorization using Presto LDAP service user
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Presto server can use dedicated LDAP service user for doing user group membership queries.
+In such case Presto will first issue a group membership query for a Presto user that needs
+to be authenticated. A user distinguished name will be extracted from a group membership
+query result. Presto will then validate user password by creating LDAP context with
+user distinguished name and user password. In order to use this mechanism ``ldap.bind-dn``,
+``ldap.bind-password`` and ``ldap.group-auth-pattern`` properties need to be defined.
+
+======================================================= ======================================================
+Property                                                Description
+======================================================= ======================================================
+``ldap.bind-dn``                                        Bind distinguished name used by Presto when issuing
+                                                        group membership queries.
+                                                        Example: ``CN=admin,OU=CITY_OU,OU=STATE_OU,DC=domain``
+``ldap.bind-password``                                  Bind password used by Presto when issuing group
+                                                        membership queries.
+                                                        Example: ``password1234``
+``ldap.group-auth-pattern``                             This property is used to specify the LDAP query for
+                                                        the LDAP group membership authorization. This query
+                                                        will be executed against the LDAP server and if
+                                                        successful, a user distinguished name will be
+                                                        extracted from a query result. Presto will then
+                                                        validate user password by creating LDAP context with
+                                                        user distinguished name and user password.
+======================================================= ======================================================
 
 Active Directory
 ****************

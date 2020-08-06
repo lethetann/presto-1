@@ -32,13 +32,13 @@ import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.base.Verify.verify;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.Duration.nanosSince;
 import static io.airlift.units.Duration.succinctDuration;
 import static io.prestosql.cli.FormatUtils.formatCount;
 import static io.prestosql.cli.FormatUtils.formatCountRate;
 import static io.prestosql.cli.FormatUtils.formatDataRate;
 import static io.prestosql.cli.FormatUtils.formatDataSize;
+import static io.prestosql.cli.FormatUtils.formatFinalTime;
 import static io.prestosql.cli.FormatUtils.formatProgressBar;
 import static io.prestosql.cli.FormatUtils.formatTime;
 import static io.prestosql.cli.FormatUtils.pluralize;
@@ -220,7 +220,7 @@ Spilled: 20GB
 
         // 0:32 [2.12GB, 15M rows] [67MB/s, 463K rows/s]
         String statsLine = format("%s [%s rows, %s] [%s rows/s, %s]",
-                formatTime(wallTime),
+                formatFinalTime(wallTime),
                 formatCount(stats.getProcessedRows()),
                 formatDataSize(bytes(stats.getProcessedBytes()), true),
                 formatCountRate(stats.getProcessedRows(), wallTime, false),
@@ -408,7 +408,7 @@ Spilled: 20GB
         String bytesPerSecond;
         String rowsPerSecond;
         if (stage.isDone()) {
-            bytesPerSecond = formatDataRate(new DataSize(0, BYTE), new Duration(0, SECONDS), false);
+            bytesPerSecond = formatDataRate(DataSize.ofBytes(0), new Duration(0, SECONDS), false);
             rowsPerSecond = formatCountRate(0, new Duration(0, SECONDS), false);
         }
         else {
@@ -470,7 +470,7 @@ Spilled: 20GB
 
     private static DataSize bytes(long bytes)
     {
-        return new DataSize(bytes, BYTE);
+        return DataSize.ofBytes(bytes);
     }
 
     private static double percentage(double count, double total)

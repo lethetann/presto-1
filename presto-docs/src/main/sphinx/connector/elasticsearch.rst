@@ -2,11 +2,6 @@
 Elasticsearch Connector
 =======================
 
-.. contents::
-    :local:
-    :backlinks: none
-    :depth: 1
-
 Overview
 --------
 
@@ -182,8 +177,57 @@ Elasticsearch Presto
 ``keyword``   ``VARCHAR``
 ``text``      ``VARCHAR``
 ``date``      ``TIMESTAMP``
+``ip``        ``IPADDRESS``
 (all others)  (unsupported)
 ============= =============
+
+.. _elasticsearch-array-types:
+
+Array Types
+^^^^^^^^^^^
+
+Fields in Elasticsearch can contain `zero or more values <https://www.elastic.co/guide/en/elasticsearch/reference/current/array.html>`_
+, but there is no dedicated array type. To indicate a field contains an array, it can be annotated in a Presto-specific structure in
+the `_meta <https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping-meta-field.html>`_ section of the index mapping.
+
+For example, you can have an Elasticsearch index that contains documents with the following structure:
+
+.. code-block:: json
+
+    {
+        "array_string_field": ["presto","is","the","besto"],
+        "long_field": 314159265359,
+        "id_field": "564e6982-88ee-4498-aa98-df9e3f6b6109",
+        "timestamp_field": "1987-09-17T06:22:48.000Z",
+        "object_field": {
+            "array_int_field": [86,75,309],
+            "int_field": 2
+        }
+    }
+
+The array fields of this structure can be defined by using the following command to add the field
+property definition to the ``_meta.presto`` property of the target index mapping.
+
+.. code-block:: shell
+
+    curl --request PUT \
+        --url localhost:9200/doc/_mapping \
+        --header 'content-type: application/json' \
+        --data '
+    {
+        "_meta": {
+            "presto":{
+                "array_string_field":{
+                    "isArray":true
+                },
+                "object_field":{
+                    "array_int_field":{
+                        "isArray":true
+                    }
+                },
+            }
+        }
+    }'
 
 Special Columns
 ---------------
@@ -213,6 +257,28 @@ as part of the table name, separated by a colon. For example:
 .. _full text query: https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-query-string-query.html#query-string-syntax
 
 
+Pass-through Queries
+--------------------
+
+The Elasticsearch connector allows you to embed any valid Elasticsearch query,
+that uses the `Elasticsearch Query DSL
+<https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl.html>`_
+in your SQL query.
+
+The results can then be used in any SQL statement, wrapping the Elasticsearch
+query. The syntax extends the syntax of the enhanced Elasticsearch table names
+with the following::
+
+    SELECT * FROM es.default."<index>$query:<es-query>"
+
+The Elasticsearch query string ``es-query`` is base32-encoded to avoid having to
+deal with escaping quotes and case sensitivity issues in table identifiers.
+
+The result of these query tables is a table with a single row and a single
+column named ``result`` of type VARCHAR. It contains the JSON payload returned
+by Elasticsearch, and can be processed with the :doc:`built-in JSON functions
+</functions/json>`.
+
 AWS Authorization
 -----------------
 
@@ -225,6 +291,5 @@ Property Name                                    Description
 ``elasticsearch.aws.region``                     AWS region or the Elasticsearch endpoint. This option is required.
 ``elasticsearch.aws.access-key``                 AWS access key to use to connect to the Elasticsearch domain.
 ``elasticsearch.aws.secret-key``                 AWS secret key to use to connect to the Elasticsearch domain.
-``elasticsearch.aws.use-instance-credentials``   Use the EC2 metadata service to retrieve API credentials.
 ================================================ ==================================================================
 

@@ -54,6 +54,8 @@ import static java.util.Objects.requireNonNull;
 public final class PartitionedLookupSourceFactory
         implements LookupSourceFactory
 {
+    public static final long NO_SPILL_EPOCH = 0;
+
     private final List<Type> types;
     private final List<Type> outputTypes;
     private final List<Type> hashChannelTypes;
@@ -74,7 +76,7 @@ public final class PartitionedLookupSourceFactory
     private int partitionsSet;
 
     @GuardedBy("lock")
-    private SpillingInfo spillingInfo = new SpillingInfo(0, ImmutableSet.of());
+    private SpillingInfo spillingInfo = new SpillingInfo(NO_SPILL_EPOCH, ImmutableSet.of());
 
     @GuardedBy("lock")
     private final Map<Integer, SpilledLookupSourceHandle> spilledPartitions = new HashMap<>();
@@ -111,6 +113,7 @@ public final class PartitionedLookupSourceFactory
         this.outputTypes = ImmutableList.copyOf(requireNonNull(outputTypes, "outputTypes is null"));
         this.hashChannelTypes = ImmutableList.copyOf(hashChannelTypes);
         checkArgument(partitionCount > 0);
+        //noinspection unchecked
         this.partitions = (Supplier<LookupSource>[]) new Supplier<?>[partitionCount];
         this.outer = outer;
         spilledLookupSource = new SpilledLookupSource(outputTypes.size());
@@ -309,7 +312,7 @@ public final class PartitionedLookupSourceFactory
                     .orElseThrow(() -> new IllegalStateException("A fixed distribution is required for JOIN when spilling is enabled"));
             checkState(finishedProbeOperators < operatorsCount, "%s probe operators finished out of %s declared", finishedProbeOperators + 1, operatorsCount);
 
-            if (!partitionedConsumptionParticipants.isPresent()) {
+            if (partitionedConsumptionParticipants.isEmpty()) {
                 // This is the first probe to finish after anything has been spilled.
                 partitionedConsumptionParticipants = OptionalInt.of(operatorsCount - finishedProbeOperators);
             }

@@ -2,6 +2,31 @@
 Deploying Presto
 ================
 
+Requirements
+------------
+
+Linux Operating System
+^^^^^^^^^^^^^^^^^^^^^^
+
+* 64-bit required
+* newer release preferred, especially when running on containers
+
+.. _requirements-java:
+
+Java Runtime Environment
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+* 64-bit required
+* version 11 recommended (lower versions not supported, higher versions less
+  tested)
+* Azul Zulu recommended (most tested)
+
+Python
+^^^^^^
+
+* version 2.6.x, 2.7.x, or 3.x
+* required by the ``bin/launcher`` script only
+
 Installing Presto
 -----------------
 
@@ -43,15 +68,18 @@ Presto is first installed. The following is a minimal ``etc/node.properties``:
 The above properties are described below:
 
 * ``node.environment``:
-  The name of the environment. All Presto nodes in a cluster must
-  have the same environment name.
+  The name of the environment. All Presto nodes in a cluster must have the same
+  environment name. The name must start with an alphanumeric character and
+  only contain alphanumeric, ``-``, or ``_`` characters.
 
 * ``node.id``:
   The unique identifier for this installation of Presto. This must be
   unique for every node. This identifier should remain consistent across
   reboots or upgrades of Presto. If running multiple installations of
   Presto on a single machine (i.e. multiple nodes on the same machine),
-  each installation must have a unique identifier.
+  each installation must have a unique identifier. The identifier must start
+  with an alphanumeric character and only contain alphanumeric, ``-``, or ``_``
+  characters.
 
 * ``node.data-dir``:
   The location (filesystem path) of the data directory. Presto stores
@@ -79,7 +107,6 @@ The following provides a good starting point for creating ``etc/jvm.config``:
     -XX:G1HeapRegionSize=32M
     -XX:+ExplicitGCInvokesConcurrent
     -XX:+ExitOnOutOfMemoryError
-    -XX:+UseGCOverheadLimit
     -XX:+HeapDumpOnOutOfMemoryError
     -XX:ReservedCodeCacheSize=512M
     -Djdk.attach.allowAttachSelf=true
@@ -89,6 +116,12 @@ Because an ``OutOfMemoryError`` typically leaves the JVM in an
 inconsistent state, we write a heap dump, for debugging, and forcibly
 terminate the process when this occurs.
 
+The temporary directory used by the JVM must allow execution of code.
+Specifically, the mount must not have the ``noexec`` flag set. The default
+``/tmp`` directory is mounted with this flag in some installations, which
+prevents Presto from starting. You can workaround this by overriding the
+temporary directory by adding ``-Djava.io.tmpdir=/path/to/other/tmpdir`` to the
+list of JVM options.
 
 .. _config_properties:
 
@@ -181,15 +214,6 @@ These properties require some explanation:
   the host and port of the Presto coordinator. This URI must not end
   in a slash.
 
-You may also wish to set the following properties:
-
-* ``jmx.rmiregistry.port``:
-  Specifies the port for the JMX RMI registry. JMX clients should connect to this port.
-
-* ``jmx.rmiserver.port``:
-  Specifies the port for the JMX RMI server. Presto exports many metrics,
-  that are useful for monitoring via JMX.
-
 The above configuration properties are a minimal set to help you get started.
 Please see :doc:`/admin` and :doc:`/security` for a more comprehensive list.
 In particular, see :doc:`/admin/resource-groups` for configuring queuing policies.
@@ -247,7 +271,7 @@ Presto can be started as a daemon by running the following:
     bin/launcher start
 
 Alternatively, it can be run in the foreground, with the logs and other
-output written to stdout/stderr. Bboth streams should be captured
+output written to stdout/stderr. Both streams should be captured
 if using a supervision system like daemontools:
 
 .. code-block:: none
@@ -258,7 +282,17 @@ Run the launcher with ``--help`` to see the supported commands and
 command line options. In particular, the ``--verbose`` option is
 very useful for debugging the installation.
 
-After launching, you can find the log files in ``var/log``:
+The launcher configures default values for the configuration
+directory ``etc``, configuration files, the data directory ``var``,
+and log files in the data directory. You can change these values
+to adjust your Presto usage to any requirements, such as using a
+directory outside the installation directory, specific mount points
+or locations, and even using other file names. For example, the Presto
+RPM adjusts the used directories to better follow the Linux Filesystem
+Hierarchy Standard (FHS).
+
+After starting Presto, you can find log files in the ``log`` directory inside
+the data directory ``var``:
 
 * ``launcher.log``:
   This log is created by the launcher and is connected to the stdout

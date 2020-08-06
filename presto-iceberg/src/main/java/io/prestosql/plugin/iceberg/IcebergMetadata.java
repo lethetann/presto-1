@@ -18,15 +18,19 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
+import io.prestosql.plugin.base.classloader.ClassLoaderSafeSystemTable;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.prestosql.plugin.hive.HiveSchemaProperties;
 import io.prestosql.plugin.hive.HiveWrittenPartitions;
 import io.prestosql.plugin.hive.TableAlreadyExistsException;
 import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Database;
 import io.prestosql.plugin.hive.metastore.HiveMetastore;
+import io.prestosql.plugin.hive.metastore.HivePrincipal;
 import io.prestosql.plugin.hive.metastore.Table;
 import io.prestosql.spi.PrestoException;
+import io.prestosql.spi.connector.CatalogSchemaName;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
 import io.prestosql.spi.connector.ConnectorInsertTableHandle;
@@ -45,16 +49,14 @@ import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.connector.SchemaTablePrefix;
 import io.prestosql.spi.connector.SystemTable;
 import io.prestosql.spi.connector.TableNotFoundException;
-import io.prestosql.spi.connector.classloader.ClassLoaderSafeSystemTable;
 import io.prestosql.spi.predicate.TupleDomain;
+import io.prestosql.spi.security.PrestoPrincipal;
 import io.prestosql.spi.statistics.ComputedStatistics;
-import io.prestosql.spi.type.DecimalType;
-import io.prestosql.spi.type.TimestampType;
 import io.prestosql.spi.type.TypeManager;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
 import org.apache.iceberg.Schema;
@@ -62,9 +64,9 @@ import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.Transaction;
-import org.apache.iceberg.hadoop.HadoopInputFile;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.TypeUtil;
+import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.NestedField;
 
 import java.io.IOException;
@@ -79,18 +81,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static io.prestosql.plugin.hive.HiveSchemaProperties.getLocation;
+import static io.prestosql.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.prestosql.plugin.hive.util.HiveWriteUtils.getTableDefaultLocation;
-import static io.prestosql.plugin.iceberg.DomainConverter.convertTupleDomainTypes;
 import static io.prestosql.plugin.iceberg.ExpressionConverter.toIcebergExpression;
+import static io.prestosql.plugin.iceberg.IcebergSchemaProperties.getSchemaLocation;
 import static io.prestosql.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
 import static io.prestosql.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
 import static io.prestosql.plugin.iceberg.IcebergTableProperties.getFileFormat;
 import static io.prestosql.plugin.iceberg.IcebergTableProperties.getPartitioning;
+import static io.prestosql.plugin.iceberg.IcebergTableProperties.getTableLocation;
 import static io.prestosql.plugin.iceberg.IcebergUtil.getColumns;
 import static io.prestosql.plugin.iceberg.IcebergUtil.getDataPath;
 import static io.prestosql.plugin.iceberg.IcebergUtil.getFileFormat;
 import static io.prestosql.plugin.iceberg.IcebergUtil.getIcebergTable;
+import static io.prestosql.plugin.iceberg.IcebergUtil.getTableComment;
 import static io.prestosql.plugin.iceberg.IcebergUtil.isIcebergTable;
 import static io.prestosql.plugin.iceberg.PartitionFields.parsePartitionFields;
 import static io.prestosql.plugin.iceberg.PartitionFields.toPartitionFields;
@@ -100,7 +104,6 @@ import static io.prestosql.plugin.iceberg.TypeConverter.toPrestoType;
 import static io.prestosql.spi.StandardErrorCode.INVALID_SCHEMA_PROPERTY;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.prestosql.spi.StandardErrorCode.SCHEMA_NOT_EMPTY;
-import static io.prestosql.spi.security.PrincipalType.USER;
 import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.Function.identity;
@@ -108,6 +111,7 @@ import static java.util.stream.Collectors.toList;
 import static org.apache.iceberg.BaseMetastoreTableOperations.ICEBERG_TABLE_TYPE_VALUE;
 import static org.apache.iceberg.BaseMetastoreTableOperations.TABLE_TYPE_PROP;
 import static org.apache.iceberg.TableMetadata.newTableMetadata;
+import static org.apache.iceberg.TableProperties.DEFAULT_FILE_FORMAT;
 import static org.apache.iceberg.Transactions.createTableTransaction;
 
 public class IcebergMetadata
@@ -139,11 +143,33 @@ public class IcebergMetadata
     }
 
     @Override
+    public Map<String, Object> getSchemaProperties(ConnectorSession session, CatalogSchemaName schemaName)
+    {
+        Optional<Database> db = metastore.getDatabase(schemaName.getSchemaName());
+        if (db.isPresent()) {
+            return HiveSchemaProperties.fromDatabase(db.get());
+        }
+
+        throw new SchemaNotFoundException(schemaName.getSchemaName());
+    }
+
+    @Override
+    public Optional<PrestoPrincipal> getSchemaOwner(ConnectorSession session, CatalogSchemaName schemaName)
+    {
+        Optional<Database> database = metastore.getDatabase(schemaName.getSchemaName());
+        if (database.isPresent()) {
+            return database.flatMap(db -> Optional.of(new PrestoPrincipal(db.getOwnerType(), db.getOwnerName())));
+        }
+
+        throw new SchemaNotFoundException(schemaName.getSchemaName());
+    }
+
+    @Override
     public IcebergTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
     {
         IcebergTableHandle handle = IcebergTableHandle.from(tableName);
         Optional<Table> table = metastore.getTable(new HiveIdentity(session), handle.getSchemaName(), handle.getTableName());
-        if (!table.isPresent()) {
+        if (table.isEmpty()) {
             return null;
         }
         if (handle.getTableType() != DATA) {
@@ -173,6 +199,10 @@ public class IcebergMetadata
                 return Optional.of(new HistoryTable(table.getSchemaTableNameWithType(), icebergTable));
             case SNAPSHOTS:
                 return Optional.of(new SnapshotsTable(table.getSchemaTableNameWithType(), typeManager, icebergTable));
+            case MANIFESTS:
+                return Optional.of(new ManifestsTable(table.getSchemaTableNameWithType(), icebergTable, table.getSnapshotId()));
+            case FILES:
+                return Optional.of(new FilesTable(table.getSchemaTableNameWithType(), icebergTable, table.getSnapshotId(), typeManager));
         }
         return Optional.empty();
     }
@@ -245,9 +275,9 @@ public class IcebergMetadata
     }
 
     @Override
-    public void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties)
+    public void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties, PrestoPrincipal owner)
     {
-        Optional<String> location = getLocation(properties).map(uri -> {
+        Optional<String> location = getSchemaLocation(properties).map(uri -> {
             try {
                 hdfsEnvironment.getFileSystem(new HdfsContext(session, schemaName), new Path(uri));
             }
@@ -260,8 +290,8 @@ public class IcebergMetadata
         Database database = Database.builder()
                 .setDatabaseName(schemaName)
                 .setLocation(location)
-                .setOwnerType(USER)
-                .setOwnerName(session.getUser())
+                .setOwnerType(owner.getType())
+                .setOwnerName(owner.getName())
                 .build();
 
         metastore.createDatabase(new HiveIdentity(session), database);
@@ -285,10 +315,30 @@ public class IcebergMetadata
     }
 
     @Override
+    public void setSchemaAuthorization(ConnectorSession session, String source, PrestoPrincipal principal)
+    {
+        metastore.setDatabaseOwner(new HiveIdentity(session), source, HivePrincipal.from(principal));
+    }
+
+    @Override
     public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
     {
         Optional<ConnectorNewTableLayout> layout = getNewTableLayout(session, tableMetadata);
         finishCreateTable(session, beginCreateTable(session, tableMetadata, layout), ImmutableList.of(), ImmutableList.of());
+    }
+
+    @Override
+    public void setTableComment(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<String> comment)
+    {
+        IcebergTableHandle handle = (IcebergTableHandle) tableHandle;
+        metastore.commentTable(new HiveIdentity(session), handle.getSchemaName(), handle.getTableName(), comment);
+        org.apache.iceberg.Table icebergTable = getIcebergTable(metastore, hdfsEnvironment, session, handle.getSchemaTableName());
+        if (comment.isEmpty()) {
+            icebergTable.updateProperties().remove(TABLE_COMMENT).commit();
+        }
+        else {
+            icebergTable.updateProperties().set(TABLE_COMMENT, comment.get()).commit();
+        }
     }
 
     @Override
@@ -307,16 +357,26 @@ public class IcebergMetadata
 
         HdfsContext hdfsContext = new HdfsContext(session, schemaName, tableName);
         HiveIdentity identity = new HiveIdentity(session);
-        String targetPath = getTableDefaultLocation(database, hdfsContext, hdfsEnvironment, schemaName, tableName).toString();
+        String targetPath = getTableLocation(tableMetadata.getProperties());
+        if (targetPath == null) {
+            targetPath = getTableDefaultLocation(database, hdfsContext, hdfsEnvironment, schemaName, tableName).toString();
+        }
 
         TableOperations operations = new HiveTableOperations(metastore, hdfsEnvironment, hdfsContext, identity, schemaName, tableName, session.getUser(), targetPath);
         if (operations.current() != null) {
             throw new TableAlreadyExistsException(schemaTableName);
         }
 
-        TableMetadata metadata = newTableMetadata(operations, schema, partitionSpec, targetPath);
+        ImmutableMap.Builder<String, String> propertiesBuilder = ImmutableMap.builderWithExpectedSize(2);
+        FileFormat fileFormat = getFileFormat(tableMetadata.getProperties());
+        propertiesBuilder.put(DEFAULT_FILE_FORMAT, fileFormat.toString());
+        if (tableMetadata.getComment().isPresent()) {
+            propertiesBuilder.put(TABLE_COMMENT, tableMetadata.getComment().get());
+        }
 
-        transaction = createTableTransaction(operations, metadata);
+        TableMetadata metadata = newTableMetadata(operations, schema, partitionSpec, targetPath, propertiesBuilder.build());
+
+        transaction = createTableTransaction(tableName, operations, metadata);
 
         return new IcebergWritableTableHandle(
                 schemaName,
@@ -325,7 +385,7 @@ public class IcebergMetadata
                 PartitionSpecParser.toJson(metadata.spec()),
                 getColumns(metadata.schema(), typeManager),
                 targetPath,
-                getFileFormat(tableMetadata.getProperties()));
+                fileFormat);
     }
 
     @Override
@@ -339,16 +399,6 @@ public class IcebergMetadata
     {
         IcebergTableHandle table = (IcebergTableHandle) tableHandle;
         org.apache.iceberg.Table icebergTable = getIcebergTable(metastore, hdfsEnvironment, session, table.getSchemaTableName());
-
-        for (NestedField column : icebergTable.schema().columns()) {
-            io.prestosql.spi.type.Type type = toPrestoType(column.type(), typeManager);
-            if (type instanceof DecimalType) {
-                throw new PrestoException(NOT_SUPPORTED, "Writing to columns of type decimal not yet supported");
-            }
-            if (type instanceof TimestampType) {
-                throw new PrestoException(NOT_SUPPORTED, "Writing to columns of type timestamp not yet supported");
-            }
-        }
 
         transaction = icebergTable.newTransaction();
 
@@ -380,10 +430,9 @@ public class IcebergMetadata
         AppendFiles appendFiles = transaction.newFastAppend();
         for (CommitTaskData task : commitTasks) {
             HdfsContext context = new HdfsContext(session, table.getSchemaName(), table.getTableName());
-            Configuration configuration = hdfsEnvironment.getConfiguration(context, new Path(task.getPath()));
 
             DataFiles.Builder builder = DataFiles.builder(icebergTable.spec())
-                    .withInputFile(HadoopInputFile.fromLocation(task.getPath(), configuration))
+                    .withInputFile(new HdfsInputFile(new Path(task.getPath()), hdfsEnvironment, context))
                     .withFormat(table.getFileFormat())
                     .withMetrics(task.getMetrics().metrics());
 
@@ -453,7 +502,7 @@ public class IcebergMetadata
 
     private ConnectorTableMetadata getTableMetadata(ConnectorSession session, SchemaTableName table)
     {
-        if (!metastore.getTable(new HiveIdentity(session), table.getSchemaName(), table.getTableName()).isPresent()) {
+        if (metastore.getTable(new HiveIdentity(session), table.getSchemaName(), table.getTableName()).isEmpty()) {
             throw new TableNotFoundException(table);
         }
 
@@ -467,7 +516,7 @@ public class IcebergMetadata
             properties.put(PARTITIONING_PROPERTY, toPartitionFields(icebergTable.spec()));
         }
 
-        return new ConnectorTableMetadata(table, columns, properties.build(), Optional.empty());
+        return new ConnectorTableMetadata(table, columns, properties.build(), getTableComment(icebergTable));
     }
 
     private List<ColumnMetadata> getColumnMetadatas(org.apache.iceberg.Table table)
@@ -477,6 +526,7 @@ public class IcebergMetadata
                     return ColumnMetadata.builder()
                             .setName(column.name())
                             .setType(toPrestoType(column.type(), typeManager))
+                            .setNullable(column.isOptional())
                             .setComment(Optional.ofNullable(column.doc()))
                             .build();
                 })
@@ -496,9 +546,10 @@ public class IcebergMetadata
                 icebergColumns.add(field);
             }
         }
-        Schema schema = new Schema(icebergColumns);
+        Type icebergSchema = Types.StructType.of(icebergColumns);
         AtomicInteger nextFieldId = new AtomicInteger(1);
-        return TypeUtil.assignFreshIds(schema, nextFieldId::getAndIncrement);
+        icebergSchema = TypeUtil.assignFreshIds(icebergSchema, nextFieldId::getAndIncrement);
+        return new Schema(icebergSchema.asStructType().fields());
     }
 
     @Override
@@ -521,7 +572,7 @@ public class IcebergMetadata
         org.apache.iceberg.Table icebergTable = getIcebergTable(metastore, hdfsEnvironment, session, handle.getSchemaTableName());
 
         icebergTable.newDelete()
-                .deleteFromRowFilter(toIcebergExpression(handle.getPredicate(), session))
+                .deleteFromRowFilter(toIcebergExpression(handle.getPredicate()))
                 .commit();
 
         // TODO: it should be possible to return number of deleted records
@@ -548,7 +599,11 @@ public class IcebergMetadata
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(ConnectorSession session, ConnectorTableHandle handle, Constraint constraint)
     {
         IcebergTableHandle table = (IcebergTableHandle) handle;
-        TupleDomain<IcebergColumnHandle> newDomain = convertTupleDomainTypes(constraint.getSummary().transform(IcebergColumnHandle.class::cast));
+        // TODO: Remove TupleDomain#simplify once Iceberg supports IN expression
+        TupleDomain<IcebergColumnHandle> newDomain = constraint.getSummary()
+                .transform(IcebergColumnHandle.class::cast)
+                .simplify()
+                .intersect(table.getPredicate());
 
         if (newDomain.equals(table.getPredicate())) {
             return Optional.empty();
@@ -559,7 +614,7 @@ public class IcebergMetadata
                         table.getTableName(),
                         table.getTableType(),
                         table.getSnapshotId(),
-                        table.getPredicate().intersect(newDomain)),
+                        newDomain),
                 constraint.getSummary()));
     }
 }

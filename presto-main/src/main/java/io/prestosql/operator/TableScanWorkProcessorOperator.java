@@ -27,9 +27,13 @@ import io.prestosql.operator.WorkProcessor.TransformationState;
 import io.prestosql.spi.Page;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorPageSource;
+import io.prestosql.spi.connector.EmptyPageSource;
 import io.prestosql.spi.connector.UpdatablePageSource;
 import io.prestosql.spi.predicate.TupleDomain;
+import io.prestosql.split.EmptySplit;
 import io.prestosql.split.PageSourceProvider;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -40,7 +44,6 @@ import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.concurrent.MoreFutures.toListenableFuture;
-import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.prestosql.operator.PageUtils.recordMaterializedBytes;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -57,13 +60,15 @@ public class TableScanWorkProcessorOperator
             WorkProcessor<Split> splits,
             PageSourceProvider pageSourceProvider,
             TableHandle table,
-            Iterable<ColumnHandle> columns)
+            Iterable<ColumnHandle> columns,
+            Supplier<TupleDomain<ColumnHandle>> dynamicFilter)
     {
         this.splitToPages = new SplitToPages(
                 session,
                 pageSourceProvider,
                 table,
                 columns,
+                dynamicFilter,
                 memoryTrackingContext.aggregateSystemMemoryContext());
         this.pages = splits.flatTransform(splitToPages);
     }
@@ -105,6 +110,12 @@ public class TableScanWorkProcessorOperator
     }
 
     @Override
+    public long getDynamicFilterSplitsProcessed()
+    {
+        return splitToPages.getDynamicFilterSplitsProcessed();
+    }
+
+    @Override
     public Duration getReadTime()
     {
         return splitToPages.getReadTime();
@@ -112,7 +123,6 @@ public class TableScanWorkProcessorOperator
 
     @Override
     public void close()
-            throws Exception
     {
         splitToPages.close();
     }
@@ -124,11 +134,14 @@ public class TableScanWorkProcessorOperator
         final PageSourceProvider pageSourceProvider;
         final TableHandle table;
         final List<ColumnHandle> columns;
+        final Supplier<TupleDomain<ColumnHandle>> dynamicFilter;
         final AggregatedMemoryContext aggregatedMemoryContext;
 
         long processedBytes;
         long processedPositions;
+        long dynamicFilterSplitsProcessed;
 
+        @Nullable
         ConnectorPageSource source;
 
         SplitToPages(
@@ -136,12 +149,14 @@ public class TableScanWorkProcessorOperator
                 PageSourceProvider pageSourceProvider,
                 TableHandle table,
                 Iterable<ColumnHandle> columns,
+                Supplier<TupleDomain<ColumnHandle>> dynamicFilter,
                 AggregatedMemoryContext aggregatedMemoryContext)
         {
             this.session = requireNonNull(session, "session is null");
             this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
             this.table = requireNonNull(table, "table is null");
             this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
+            this.dynamicFilter = requireNonNull(dynamicFilter, "dynamicFilter is null");
             this.aggregatedMemoryContext = requireNonNull(aggregatedMemoryContext, "aggregatedMemoryContext is null");
         }
 
@@ -153,7 +168,17 @@ public class TableScanWorkProcessorOperator
             }
 
             checkState(source == null, "Table scan split already set");
-            source = pageSourceProvider.createPageSource(session, split, table, columns, TupleDomain::all);
+            if (!dynamicFilter.get().isAll()) {
+                dynamicFilterSplitsProcessed++;
+            }
+
+            if (split.getConnectorSplit() instanceof EmptySplit) {
+                source = new EmptyPageSource();
+            }
+            else {
+                source = pageSourceProvider.createPageSource(session, split, table, columns, dynamicFilter);
+            }
+
             return TransformationState.ofResult(
                     WorkProcessor.create(new ConnectorPageSourceToPages(aggregatedMemoryContext, source))
                             .map(page -> {
@@ -176,10 +201,10 @@ public class TableScanWorkProcessorOperator
         DataSize getPhysicalInputDataSize()
         {
             if (source == null) {
-                return new DataSize(0, BYTE);
+                return DataSize.ofBytes(0);
             }
 
-            return new DataSize(source.getCompletedBytes(), BYTE);
+            return DataSize.ofBytes(source.getCompletedBytes());
         }
 
         long getPhysicalInputPositions()
@@ -189,12 +214,17 @@ public class TableScanWorkProcessorOperator
 
         DataSize getInputDataSize()
         {
-            return new DataSize(processedBytes, BYTE);
+            return DataSize.ofBytes(processedBytes);
         }
 
         long getInputPositions()
         {
             return processedPositions;
+        }
+
+        long getDynamicFilterSplitsProcessed()
+        {
+            return dynamicFilterSplitsProcessed;
         }
 
         Duration getReadTime()
@@ -258,7 +288,6 @@ public class TableScanWorkProcessorOperator
                 }
             }
 
-            // TODO: report operator stats
             return ProcessState.ofResult(page);
         }
     }

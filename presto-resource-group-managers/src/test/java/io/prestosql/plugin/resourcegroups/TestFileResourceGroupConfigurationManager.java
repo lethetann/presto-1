@@ -13,6 +13,7 @@
  */
 package io.prestosql.plugin.resourcegroups;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
@@ -26,12 +27,18 @@ import org.testng.annotations.Test;
 
 import java.time.Duration;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import static com.google.common.io.Resources.getResource;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.prestosql.memory.LocalMemoryManager.GENERAL_POOL;
+import static io.prestosql.plugin.resourcegroups.TestingResourceGroups.groupIdTemplate;
+import static io.prestosql.plugin.resourcegroups.TestingResourceGroups.managerSpec;
+import static io.prestosql.plugin.resourcegroups.TestingResourceGroups.resourceGroupSpec;
+import static io.prestosql.plugin.resourcegroups.TestingResourceGroups.selectorSpec;
 import static io.prestosql.spi.resourcegroups.SchedulingPolicy.WEIGHTED;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
@@ -71,13 +78,75 @@ public class TestFileResourceGroupConfigurationManager
     }
 
     @Test
+    public void testMatchByUserGroups()
+    {
+        ManagerSpec managerSpec = managerSpec(
+                resourceGroupSpec("group"),
+                ImmutableList.of(selectorSpec(groupIdTemplate("group"))
+                        .userGroups("first matching", "second matching")));
+
+        FileResourceGroupConfigurationManager groupManager = new FileResourceGroupConfigurationManager((poolId, listener) -> {}, managerSpec);
+
+        assertThat(groupManager.match(userGroupsSelectionCriteria("not matching"))).isEmpty();
+        assertThat(groupManager.match(userGroupsSelectionCriteria("first matching")))
+                .map(SelectionContext::getContext)
+                .isEqualTo(Optional.of(groupIdTemplate("group")));
+    }
+
+    @Test
+    public void testMatchByUsers()
+    {
+        ManagerSpec managerSpec = managerSpec(
+                resourceGroupSpec("group"),
+                ImmutableList.of(selectorSpec(groupIdTemplate("group"))
+                        .users("First matching user", "Second matching user")));
+
+        FileResourceGroupConfigurationManager groupManager = new FileResourceGroupConfigurationManager((poolId, listener) -> {}, managerSpec);
+
+        assertThat(groupManager.match(userSelectionCriteria("Not matching user"))).isEmpty();
+        assertThat(groupManager.match(userSelectionCriteria("First matching user")))
+                .map(SelectionContext::getContext)
+                .isEqualTo(Optional.of(groupIdTemplate("group")));
+    }
+
+    @Test
+    public void testMatchByUsersAndGroups()
+    {
+        ManagerSpec managerSpec = managerSpec(
+                resourceGroupSpec("group"),
+                ImmutableList.of(selectorSpec(groupIdTemplate("group"))
+                        .userGroups("Matching group")
+                        .users("Matching user")));
+
+        FileResourceGroupConfigurationManager groupManager = new FileResourceGroupConfigurationManager((poolId, listener) -> {}, managerSpec);
+
+        assertThat(groupManager.match(userAndUserGroupsSelectionCriteria("Matching user", "Not matching group"))).isEmpty();
+        assertThat(groupManager.match(userAndUserGroupsSelectionCriteria("Not matching user", "Matching group"))).isEmpty();
+        assertThat(groupManager.match(userAndUserGroupsSelectionCriteria("Matching user", "Matching group")))
+                .map(SelectionContext::getContext)
+                .isEqualTo(Optional.of(groupIdTemplate("group")));
+    }
+
+    @Test
+    public void testUserGroupsConfiguration()
+    {
+        ManagerSpec spec = parseManagerSpec("resource_groups_config_user_groups.json");
+
+        assertThat(spec.getSelectors()
+                .stream()
+                .map(SelectorSpec::getUserGroupRegex)
+                .map(pattern -> pattern.map(Pattern::pattern)))
+                .containsOnly(Optional.of("groupA"));
+    }
+
+    @Test
     public void testConfiguration()
     {
         FileResourceGroupConfigurationManager manager = parse("resource_groups_config.json");
         ResourceGroupId globalId = new ResourceGroupId("global");
         ResourceGroup global = new TestingResourceGroup(globalId);
         manager.configure(global, new SelectionContext<>(globalId, new ResourceGroupIdTemplate("global")));
-        assertEquals(global.getSoftMemoryLimitBytes(), new DataSize(1, MEGABYTE).toBytes());
+        assertEquals(global.getSoftMemoryLimitBytes(), DataSize.of(1, MEGABYTE).toBytes());
         assertEquals(global.getSoftCpuLimit(), Duration.ofHours(1));
         assertEquals(global.getHardCpuLimit(), Duration.ofDays(1));
         assertEquals(global.getCpuQuotaGenerationMillisPerSecond(), 1000 * 24);
@@ -90,7 +159,7 @@ public class TestFileResourceGroupConfigurationManager
         ResourceGroupId subId = new ResourceGroupId(globalId, "sub");
         ResourceGroup sub = new TestingResourceGroup(subId);
         manager.configure(sub, new SelectionContext<>(subId, new ResourceGroupIdTemplate("global.sub")));
-        assertEquals(sub.getSoftMemoryLimitBytes(), new DataSize(2, MEGABYTE).toBytes());
+        assertEquals(sub.getSoftMemoryLimitBytes(), DataSize.of(2, MEGABYTE).toBytes());
         assertEquals(sub.getHardConcurrencyLimit(), 3);
         assertEquals(sub.getMaxQueuedQueries(), 4);
         assertNull(sub.getSchedulingPolicy());
@@ -133,6 +202,7 @@ public class TestFileResourceGroupConfigurationManager
         SelectionContext<ResourceGroupIdTemplate> selectionContext = match(manager, new SelectionCriteria(
                 true,
                 "Alice",
+                ImmutableSet.of(),
                 Optional.of("jdbc#powerfulbi"),
                 ImmutableSet.of("hipri"),
                 EMPTY_RESOURCE_ESTIMATES,
@@ -152,7 +222,7 @@ public class TestFileResourceGroupConfigurationManager
         ResourceGroupId globalId = new ResourceGroupId("global");
         ResourceGroup global = new TestingResourceGroup(globalId);
         manager.configure(global, new SelectionContext<>(globalId, new ResourceGroupIdTemplate("global")));
-        assertEquals(global.getSoftMemoryLimitBytes(), new DataSize(3, MEGABYTE).toBytes());
+        assertEquals(global.getSoftMemoryLimitBytes(), DataSize.of(3, MEGABYTE).toBytes());
         assertEquals(global.getMaxQueuedQueries(), 99);
         assertEquals(global.getHardConcurrencyLimit(), 42);
     }
@@ -181,13 +251,44 @@ public class TestFileResourceGroupConfigurationManager
         return new FileResourceGroupConfigurationManager((poolId, listener) -> {}, config);
     }
 
+    private static ManagerSpec parseManagerSpec(String fileName)
+    {
+        FileResourceGroupConfig config = new FileResourceGroupConfig();
+        config.setConfigFile(getResource(fileName).getPath());
+        return FileResourceGroupConfigurationManager.parseManagerSpec(config);
+    }
+
     private static SelectionCriteria userAndSourceSelectionCriteria(String user, String source)
     {
-        return new SelectionCriteria(true, user, Optional.of(source), ImmutableSet.of(), EMPTY_RESOURCE_ESTIMATES, Optional.empty());
+        return new SelectionCriteria(true, user, ImmutableSet.of(), Optional.of(source), ImmutableSet.of(), EMPTY_RESOURCE_ESTIMATES, Optional.empty());
+    }
+
+    private static SelectionCriteria userSelectionCriteria(String user)
+    {
+        return userAndSourceSelectionCriteria(user, "source");
     }
 
     private static SelectionCriteria queryTypeSelectionCriteria(String queryType)
     {
-        return new SelectionCriteria(true, "test_user", Optional.empty(), ImmutableSet.of(), EMPTY_RESOURCE_ESTIMATES, Optional.of(queryType));
+        return new SelectionCriteria(true, "test_user", ImmutableSet.of(), Optional.empty(), ImmutableSet.of(), EMPTY_RESOURCE_ESTIMATES, Optional.of(queryType));
+    }
+
+    private static SelectionCriteria userGroupsSelectionCriteria(String... groups)
+    {
+        return new SelectionCriteria(true, "test_user", ImmutableSet.copyOf(groups), Optional.empty(), ImmutableSet.of(), EMPTY_RESOURCE_ESTIMATES, Optional.empty());
+    }
+
+    private static SelectionCriteria userAndUserGroupsSelectionCriteria(String user, String group, String... groups)
+    {
+        return new SelectionCriteria(
+                true,
+                user,
+                ImmutableSet.<String>builder()
+                        .add(group)
+                        .add(groups).build(),
+                Optional.empty(),
+                ImmutableSet.of(),
+                EMPTY_RESOURCE_ESTIMATES,
+                Optional.empty());
     }
 }

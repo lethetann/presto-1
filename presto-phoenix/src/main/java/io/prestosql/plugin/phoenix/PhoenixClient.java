@@ -15,8 +15,6 @@ package io.prestosql.plugin.phoenix;
 
 import com.google.common.collect.ImmutableSet;
 import io.prestosql.plugin.jdbc.BaseJdbcClient;
-import io.prestosql.plugin.jdbc.BlockReadFunction;
-import io.prestosql.plugin.jdbc.BlockWriteFunction;
 import io.prestosql.plugin.jdbc.ColumnMapping;
 import io.prestosql.plugin.jdbc.ConnectionFactory;
 import io.prestosql.plugin.jdbc.JdbcColumnHandle;
@@ -25,9 +23,12 @@ import io.prestosql.plugin.jdbc.JdbcOutputTableHandle;
 import io.prestosql.plugin.jdbc.JdbcSplit;
 import io.prestosql.plugin.jdbc.JdbcTableHandle;
 import io.prestosql.plugin.jdbc.JdbcTypeHandle;
+import io.prestosql.plugin.jdbc.ObjectReadFunction;
+import io.prestosql.plugin.jdbc.ObjectWriteFunction;
 import io.prestosql.plugin.jdbc.QueryBuilder;
 import io.prestosql.plugin.jdbc.WriteMapping;
 import io.prestosql.spi.PrestoException;
+import io.prestosql.spi.block.Block;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.type.ArrayType;
 import io.prestosql.spi.type.Type;
@@ -76,8 +77,10 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.doubleWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.realColumnMapping;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.realWriteFunction;
-import static io.prestosql.plugin.jdbc.StandardColumnMappings.timeWriteFunction;
+import static io.prestosql.plugin.jdbc.StandardColumnMappings.timeWriteFunctionUsingSqlTime;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varcharColumnMapping;
+import static io.prestosql.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
+import static io.prestosql.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.prestosql.plugin.phoenix.MetadataUtil.toPhoenixSchemaName;
 import static io.prestosql.plugin.phoenix.PhoenixClientModule.getConnectionProperties;
 import static io.prestosql.plugin.phoenix.PhoenixErrorCode.PHOENIX_METADATA_ERROR;
@@ -142,12 +145,7 @@ public class PhoenixClient
 
     public void execute(ConnectorSession session, String statement)
     {
-        try (Connection connection = connectionFactory.openConnection(JdbcIdentity.from(session))) {
-            execute(connection, statement);
-        }
-        catch (SQLException e) {
-            throw new PrestoException(PHOENIX_QUERY_ERROR, "Error while executing statement", e);
-        }
+        execute(JdbcIdentity.from(session), statement);
     }
 
     @Override
@@ -157,9 +155,9 @@ public class PhoenixClient
             ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
             schemaNames.add(DEFAULT_SCHEMA);
             while (resultSet.next()) {
-                String schemaName = resultSet.getString("TABLE_SCHEM");
+                String schemaName = getTableSchemaName(resultSet);
                 // skip internal schemas
-                if (schemaName != null && !schemaName.equalsIgnoreCase("information_schema")) {
+                if (filterSchema(schemaName)) {
                     schemaNames.add(schemaName);
                 }
             }
@@ -175,13 +173,11 @@ public class PhoenixClient
             throws SQLException
     {
         PhoenixSplit phoenixSplit = (PhoenixSplit) split;
-        PreparedStatement query = new QueryBuilder(identifierQuote).buildSql(
-                this,
+        PreparedStatement query = new QueryBuilder(this).buildSql(
                 session,
                 connection,
-                table.getCatalogName(),
-                table.getSchemaName(),
-                table.getTableName(),
+                table.getRemoteTableName(),
+                table.getGroupingSets(),
                 columnHandles,
                 phoenixSplit.getConstraint(),
                 split.getAdditionalPredicate(),
@@ -246,11 +242,14 @@ public class PhoenixClient
                 if (typeHandle.getColumnSize() == 0) {
                     return Optional.of(varcharColumnMapping(createUnboundedVarcharType()));
                 }
-                return super.toPrestoType(session, connection, typeHandle);
+                break;
             // TODO add support for TIMESTAMP after Phoenix adds support for LocalDateTime
             case TIMESTAMP:
             case TIME_WITH_TIMEZONE:
             case TIMESTAMP_WITH_TIMEZONE:
+                if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
+                    return mapToUnboundedVarchar(typeHandle);
+                }
                 return Optional.empty();
             case FLOAT:
                 return Optional.of(realColumnMapping());
@@ -282,7 +281,7 @@ public class PhoenixClient
             return WriteMapping.longMapping("float", realWriteFunction());
         }
         if (TIME.equals(type)) {
-            return WriteMapping.longMapping("time", timeWriteFunction());
+            return WriteMapping.longMapping("time", timeWriteFunctionUsingSqlTime(session));
         }
         // Phoenix doesn't support _WITH_TIME_ZONE
         if (TIME_WITH_TIME_ZONE.equals(type) || TIMESTAMP_WITH_TIME_ZONE.equals(type)) {
@@ -292,33 +291,39 @@ public class PhoenixClient
             Type elementType = ((ArrayType) type).getElementType();
             String elementDataType = toWriteMapping(session, elementType).getDataType().toUpperCase();
             String elementWriteName = getArrayElementPhoenixTypeName(session, this, elementType);
-            return WriteMapping.blockMapping(elementDataType + " ARRAY", arrayWriteFunction(session, elementType, elementWriteName));
+            return WriteMapping.objectMapping(elementDataType + " ARRAY", arrayWriteFunction(session, elementType, elementWriteName));
         }
         return super.toWriteMapping(session, type);
     }
 
+    @Override
+    public boolean isLimitGuaranteed(ConnectorSession session)
+    {
+        return false;
+    }
+
     private static ColumnMapping arrayColumnMapping(ConnectorSession session, ArrayType arrayType, String elementJdbcTypeName)
     {
-        return ColumnMapping.blockMapping(
+        return ColumnMapping.objectMapping(
                 arrayType,
                 arrayReadFunction(session, arrayType.getElementType()),
                 arrayWriteFunction(session, arrayType.getElementType(), elementJdbcTypeName));
     }
 
-    private static BlockReadFunction arrayReadFunction(ConnectorSession session, Type elementType)
+    private static ObjectReadFunction arrayReadFunction(ConnectorSession session, Type elementType)
     {
-        return (resultSet, columnIndex) -> {
+        return ObjectReadFunction.of(Block.class, (resultSet, columnIndex) -> {
             Object[] objectArray = toBoxedArray(resultSet.getArray(columnIndex).getArray());
             return jdbcObjectArrayToBlock(session, elementType, objectArray);
-        };
+        });
     }
 
-    private static BlockWriteFunction arrayWriteFunction(ConnectorSession session, Type elementType, String elementJdbcTypeName)
+    private static ObjectWriteFunction arrayWriteFunction(ConnectorSession session, Type elementType, String elementJdbcTypeName)
     {
-        return (statement, index, block) -> {
+        return ObjectWriteFunction.of(Block.class, (statement, index, block) -> {
             Array jdbcArray = statement.getConnection().createArrayOf(elementJdbcTypeName, getJdbcObjectArray(session, elementType, block));
             statement.setArray(index, jdbcArray);
-        };
+        });
     }
 
     private JdbcTypeHandle getArrayElementTypeHandle(JdbcTypeHandle arrayTypeHandle)

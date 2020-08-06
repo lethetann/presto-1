@@ -90,7 +90,7 @@ public class TestSqlCancel
 
         runAndCancelQuery(sql);
         assertThat(() -> query("SELECT * from " + tableName))
-                .failsWithMessage(format("Table hive.default.%s does not exist", tableName));
+                .failsWithMessage(format("Table 'hive.default.%s' does not exist", tableName));
     }
 
     @Test(groups = CANCEL_QUERY, timeOut = 60_000L)
@@ -168,8 +168,11 @@ public class TestSqlCancel
         {
             requireNonNull(queryId, "queryId is null");
             URI cancelUri = uriBuilderFrom(uri).appendPath("/v1/query").appendPath(queryId).build();
-            Request request = prepareDelete().setUri(cancelUri).build();
-            return httpClient.execute(request, new ResponseHandler<Response, RuntimeException>()
+            Request request = prepareDelete()
+                    .setHeader("X-Presto-User", "anyUser")
+                    .setUri(cancelUri)
+                    .build();
+            return httpClient.execute(request, new ResponseHandler<>()
             {
                 @Override
                 public Response handleException(Request request, Exception exception)

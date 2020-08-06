@@ -56,7 +56,7 @@ public class SimpleFilterProjectSemiJoinStatsRule
     {
         super(normalizer);
         this.metadata = requireNonNull(metadata, "metadata is null");
-        this.filterStatsCalculator = requireNonNull(filterStatsCalculator, "filterStatsCalculator can not be null");
+        this.filterStatsCalculator = requireNonNull(filterStatsCalculator, "filterStatsCalculator cannot be null");
     }
 
     @Override
@@ -100,7 +100,7 @@ public class SimpleFilterProjectSemiJoinStatsRule
 
         Optional<SemiJoinOutputFilter> semiJoinOutputFilter = extractSemiJoinOutputFilter(filterNode.getPredicate(), semiJoinNode.getSemiJoinOutput());
 
-        if (!semiJoinOutputFilter.isPresent()) {
+        if (semiJoinOutputFilter.isEmpty()) {
             return Optional.empty();
         }
 
@@ -158,7 +158,7 @@ public class SimpleFilterProjectSemiJoinStatsRule
         public SemiJoinOutputFilter(boolean negated, Expression remainingPredicate)
         {
             this.negated = negated;
-            this.remainingPredicate = requireNonNull(remainingPredicate, "remainingPredicate can not be null");
+            this.remainingPredicate = requireNonNull(remainingPredicate, "remainingPredicate cannot be null");
         }
 
         public boolean isNegated()

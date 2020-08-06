@@ -56,9 +56,9 @@ import java.util.function.Function;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.nullToEmpty;
-import static com.google.common.primitives.Doubles.isFinite;
 import static io.airlift.units.Duration.nanosSince;
 import static io.prestosql.verifier.QueryResult.State;
+import static java.lang.Double.isFinite;
 import static java.lang.String.format;
 import static java.util.Collections.unmodifiableList;
 import static java.util.Objects.requireNonNull;
@@ -214,7 +214,7 @@ public class Validator
         try {
             controlResult = executePreAndMainForControl();
 
-            // query has too many rows. Consider blacklisting.
+            // query has too many rows. Consider banning it.
             if (controlResult.getState() == State.TOO_MANY_ROWS) {
                 testResult = new QueryResult(State.INVALID, null, null, null, null, ImmutableList.of());
                 return false;

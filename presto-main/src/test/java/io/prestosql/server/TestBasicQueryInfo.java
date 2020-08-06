@@ -25,6 +25,7 @@ import io.prestosql.spi.QueryId;
 import io.prestosql.spi.StandardErrorCode;
 import io.prestosql.spi.eventlistener.StageGcStatistics;
 import io.prestosql.spi.memory.MemoryPoolId;
+import io.prestosql.spi.resourcegroups.QueryType;
 import org.joda.time.DateTime;
 import org.testng.annotations.Test;
 
@@ -79,6 +80,7 @@ public class TestBasicQueryInfo
                                 DataSize.valueOf("23GB"),
                                 DataSize.valueOf("24GB"),
                                 DataSize.valueOf("25GB"),
+                                DataSize.valueOf("30GB"),
                                 DataSize.valueOf("26GB"),
                                 DataSize.valueOf("27GB"),
                                 DataSize.valueOf("28GB"),
@@ -91,6 +93,7 @@ public class TestBasicQueryInfo
                                 ImmutableSet.of(BlockedReason.WAITING_FOR_MEMORY),
                                 DataSize.valueOf("271GB"),
                                 281,
+                                Duration.valueOf("20m"),
                                 DataSize.valueOf("272GB"),
                                 282,
                                 DataSize.valueOf("27GB"),
@@ -126,14 +129,18 @@ public class TestBasicQueryInfo
                         ImmutableList.of(),
                         ImmutableSet.of(),
                         Optional.empty(),
+                        ImmutableList.of(),
+                        ImmutableList.of(),
                         false,
-                        Optional.empty()));
+                        Optional.empty(),
+                        Optional.of(QueryType.SELECT)));
 
         assertEquals(basicInfo.getQueryId().getId(), "0");
         assertEquals(basicInfo.getState(), RUNNING);
         assertEquals(basicInfo.getMemoryPool().getId(), "reserved");
         assertEquals(basicInfo.isScheduled(), false);
         assertEquals(basicInfo.getQuery(), "SELECT 4");
+        assertEquals(basicInfo.getQueryType().get(), QueryType.SELECT);
 
         assertEquals(basicInfo.getQueryStats().getCreateTime(), DateTime.parse("1991-09-06T05:00-05:30"));
         assertEquals(basicInfo.getQueryStats().getEndTime(), DateTime.parse("1991-09-06T06:00-05:30"));

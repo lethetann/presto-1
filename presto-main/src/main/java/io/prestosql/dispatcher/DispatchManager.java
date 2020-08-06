@@ -50,6 +50,8 @@ import java.util.concurrent.Executor;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
+import static io.prestosql.execution.QueryState.QUEUED;
+import static io.prestosql.execution.QueryState.RUNNING;
 import static io.prestosql.spi.StandardErrorCode.QUERY_TEXT_TOO_LARGE;
 import static io.prestosql.util.StatementUtils.getQueryType;
 import static io.prestosql.util.StatementUtils.isTransactionControlStatement;
@@ -138,7 +140,7 @@ public class DispatchManager
         requireNonNull(sessionContext, "sessionFactory is null");
         requireNonNull(query, "query is null");
         checkArgument(!query.isEmpty(), "query must not be empty string");
-        checkArgument(!queryTracker.tryGetQuery(queryId).isPresent(), "query %s already exists", queryId);
+        checkArgument(queryTracker.tryGetQuery(queryId).isEmpty(), "query %s already exists", queryId);
 
         DispatchQueryCreationFuture queryCreationFuture = new DispatchQueryCreationFuture();
         queryExecutor.execute(() -> {
@@ -153,8 +155,8 @@ public class DispatchManager
     }
 
     /**
-     *  Creates and registers a dispatch query with the query tracker.  This method will never fail to register a query with the query
-     *  tracker.  If an error occurs while creating a dispatch query, a failed dispatch will be created and registered.
+     * Creates and registers a dispatch query with the query tracker.  This method will never fail to register a query with the query
+     * tracker.  If an error occurs while creating a dispatch query, a failed dispatch will be created and registered.
      */
     private <C> void createQueryInternal(QueryId queryId, Slug slug, SessionContext sessionContext, String query, ResourceGroupManager<C> resourceGroupManager)
     {
@@ -170,6 +172,9 @@ public class DispatchManager
             // decode session
             session = sessionSupplier.createSession(queryId, sessionContext);
 
+            // check query execute permissions
+            accessControl.checkCanExecuteQuery(sessionContext.getIdentity());
+
             // prepare query
             preparedQuery = queryPreparer.prepareQuery(session, query);
 
@@ -178,6 +183,7 @@ public class DispatchManager
             SelectionContext<C> selectionContext = resourceGroupManager.selectGroup(new SelectionCriteria(
                     sessionContext.getIdentity().getPrincipal().isPresent(),
                     sessionContext.getIdentity().getUser(),
+                    sessionContext.getIdentity().getGroups(),
                     Optional.ofNullable(sessionContext.getSource()),
                     sessionContext.getClientTags(),
                     sessionContext.getResourceEstimates(),
@@ -257,6 +263,22 @@ public class DispatchManager
                 .collect(toImmutableList());
     }
 
+    @Managed
+    public long getQueuedQueries()
+    {
+        return queryTracker.getAllQueries().stream()
+                .filter(query -> query.getState() == QUEUED)
+                .count();
+    }
+
+    @Managed
+    public long getRunningQueries()
+    {
+        return queryTracker.getAllQueries().stream()
+                .filter(query -> query.getState() == RUNNING && !query.getBasicQueryInfo().getQueryStats().isFullyBlocked())
+                .count();
+    }
+
     public boolean isQueryRegistered(QueryId queryId)
     {
         return queryTracker.tryGetQuery(queryId).isPresent();
@@ -318,7 +340,7 @@ public class DispatchManager
         @Override
         public boolean cancel(boolean mayInterruptIfRunning)
         {
-            // query submission can not be canceled
+            // query submission cannot be canceled
             return false;
         }
     }

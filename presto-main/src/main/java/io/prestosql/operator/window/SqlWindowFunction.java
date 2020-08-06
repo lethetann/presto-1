@@ -13,10 +13,10 @@
  */
 package io.prestosql.operator.window;
 
-import io.prestosql.metadata.BoundVariables;
 import io.prestosql.metadata.FunctionArgumentDefinition;
+import io.prestosql.metadata.FunctionBinding;
+import io.prestosql.metadata.FunctionDependencies;
 import io.prestosql.metadata.FunctionMetadata;
-import io.prestosql.metadata.Metadata;
 import io.prestosql.metadata.Signature;
 import io.prestosql.metadata.SqlFunction;
 
@@ -31,7 +31,7 @@ public class SqlWindowFunction
     private final WindowFunctionSupplier supplier;
     private final FunctionMetadata functionMetadata;
 
-    public SqlWindowFunction(WindowFunctionSupplier supplier)
+    public SqlWindowFunction(WindowFunctionSupplier supplier, boolean deprecated)
     {
         this.supplier = requireNonNull(supplier, "supplier is null");
         Signature signature = supplier.getSignature();
@@ -42,7 +42,8 @@ public class SqlWindowFunction
                 false,
                 true,
                 nullToEmpty(supplier.getDescription()),
-                WINDOW);
+                WINDOW,
+                deprecated);
     }
 
     @Override
@@ -51,7 +52,12 @@ public class SqlWindowFunction
         return functionMetadata;
     }
 
-    public WindowFunctionSupplier specialize(BoundVariables boundVariables, int arity, Metadata metadata)
+    public WindowFunctionSupplier specialize(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
+    {
+        return specialize(functionBinding);
+    }
+
+    public WindowFunctionSupplier specialize(FunctionBinding functionBinding)
     {
         return supplier;
     }

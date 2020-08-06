@@ -15,12 +15,12 @@ package io.prestosql.plugin.phoenix;
 
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
-import io.airlift.tpch.TpchTable;
 import io.prestosql.Session;
 import io.prestosql.metadata.QualifiedObjectName;
 import io.prestosql.plugin.tpch.TpchPlugin;
 import io.prestosql.testing.DistributedQueryRunner;
 import io.prestosql.testing.QueryRunner;
+import io.prestosql.tpch.TpchTable;
 import org.intellij.lang.annotations.Language;
 
 import java.sql.Connection;
@@ -30,11 +30,11 @@ import java.sql.Statement;
 import java.util.Map;
 import java.util.Properties;
 
-import static io.airlift.tpch.TpchTable.LINE_ITEM;
-import static io.airlift.tpch.TpchTable.ORDERS;
-import static io.airlift.tpch.TpchTable.PART_SUPPLIER;
 import static io.prestosql.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.prestosql.testing.TestingSession.testSessionBuilder;
+import static io.prestosql.tpch.TpchTable.LINE_ITEM;
+import static io.prestosql.tpch.TpchTable.ORDERS;
+import static io.prestosql.tpch.TpchTable.PART_SUPPLIER;
 import static java.lang.String.format;
 
 public final class PhoenixQueryRunner
@@ -78,7 +78,7 @@ public final class PhoenixQueryRunner
             throws SQLException
     {
         Properties properties = new Properties();
-        properties.put("phoenix.schema.isNamespaceMappingEnabled", "true");
+        properties.setProperty("phoenix.schema.isNamespaceMappingEnabled", "true");
         try (Connection connection = DriverManager.getConnection(phoenixServer.getJdbcUrl(), properties);
                 Statement statement = connection.createStatement()) {
             statement.execute(format("CREATE SCHEMA %s", schema));

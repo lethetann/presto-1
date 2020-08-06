@@ -14,6 +14,7 @@
 package io.prestosql.connector.system;
 
 import com.google.common.collect.ImmutableMap;
+import io.prestosql.connector.system.jdbc.JdbcTable;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ColumnMetadata;
@@ -65,7 +66,7 @@ public class SystemTablesMetadata
     public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
     {
         Optional<SystemTable> table = tables.getSystemTable(session, tableName);
-        if (!table.isPresent()) {
+        if (table.isEmpty()) {
             return null;
         }
         return SystemTableHandle.fromSchemaTableName(tableName);
@@ -83,7 +84,7 @@ public class SystemTablesMetadata
         return tables.listSystemTables(session).stream()
                 .map(SystemTable::getTableMetadata)
                 .map(ConnectorTableMetadata::getTable)
-                .filter(table -> !schemaName.isPresent() || table.getSchemaName().equals(schemaName.get()))
+                .filter(table -> schemaName.isEmpty() || table.getSchemaName().equals(schemaName.get()))
                 .collect(toImmutableList());
     }
 
@@ -95,7 +96,7 @@ public class SystemTablesMetadata
         String columnName = ((SystemColumnHandle) columnHandle).getColumnName();
 
         ColumnMetadata columnMetadata = findColumnMetadata(tableMetadata, columnName);
-        checkArgument(columnMetadata != null, "Column %s on table %s does not exist", columnName, tableMetadata.getTable());
+        checkArgument(columnMetadata != null, "Column '%s' on table '%s' does not exist", columnName, tableMetadata.getTable());
         return columnMetadata;
     }
 
@@ -111,7 +112,7 @@ public class SystemTablesMetadata
         SystemTableHandle systemTableHandle = (SystemTableHandle) tableHandle;
         return tables.getSystemTable(session, systemTableHandle.getSchemaTableName())
                 // table might disappear in the meantime
-                .orElseThrow(() -> new PrestoException(NOT_FOUND, format("Table %s not found", systemTableHandle.getSchemaTableName())));
+                .orElseThrow(() -> new PrestoException(NOT_FOUND, format("Table '%s' not found", systemTableHandle.getSchemaTableName())));
     }
 
     @Override
@@ -156,12 +157,24 @@ public class SystemTablesMetadata
 
         TupleDomain<ColumnHandle> oldDomain = table.getConstraint();
         TupleDomain<ColumnHandle> newDomain = oldDomain.intersect(constraint.getSummary());
+        if (oldDomain.equals(newDomain) && constraint.predicate().isEmpty()) {
+            return Optional.empty();
+        }
+
+        SystemTable systemTable = checkAndGetTable(session, table);
+        if (systemTable instanceof JdbcTable) {
+            TupleDomain<ColumnHandle> filtered = ((JdbcTable) systemTable).applyFilter(session, new Constraint(newDomain, constraint.predicate(), constraint.getColumns()));
+            newDomain = newDomain.intersect(filtered);
+        }
+
         if (oldDomain.equals(newDomain)) {
             return Optional.empty();
         }
 
+        if (newDomain.isNone()) {
+            // TODO (https://github.com/prestosql/presto/issues/3647) indicate the table scan is empty
+        }
         table = new SystemTableHandle(table.getSchemaName(), table.getTableName(), newDomain);
-
         return Optional.of(new ConstraintApplicationResult<>(table, constraint.getSummary()));
     }
 }

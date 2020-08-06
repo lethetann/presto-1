@@ -76,9 +76,10 @@ import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.prestosql.metadata.MetadataManager.createTestMetadataManager;
-import static io.prestosql.operator.scalar.FunctionAssertions.createExpression;
 import static io.prestosql.spi.type.BigintType.BIGINT;
 import static io.prestosql.spi.type.VarcharType.VARCHAR;
+import static io.prestosql.sql.ExpressionTestUtils.createExpression;
+import static io.prestosql.sql.ExpressionTestUtils.getTypes;
 import static io.prestosql.testing.TestingHandles.TEST_TABLE_HANDLE;
 import static io.prestosql.testing.TestingSplit.createLocalSplit;
 import static java.util.Locale.ENGLISH;
@@ -103,7 +104,7 @@ public class BenchmarkScanFilterAndProjectOperator
     private static final TypeAnalyzer TYPE_ANALYZER = new TypeAnalyzer(new SqlParser(), METADATA);
 
     private static final int TOTAL_POSITIONS = 1_000_000;
-    private static final DataSize FILTER_AND_PROJECT_MIN_OUTPUT_PAGE_SIZE = new DataSize(500, KILOBYTE);
+    private static final DataSize FILTER_AND_PROJECT_MIN_OUTPUT_PAGE_SIZE = DataSize.of(500, KILOBYTE);
     private static final int FILTER_AND_PROJECT_MIN_OUTPUT_PAGE_ROW_COUNT = 256;
 
     @State(Thread)
@@ -182,7 +183,7 @@ public class BenchmarkScanFilterAndProjectOperator
 
         public TaskContext createTaskContext()
         {
-            return TestingTaskContext.createTaskContext(executor, scheduledExecutor, TEST_SESSION, new DataSize(2, GIGABYTE));
+            return TestingTaskContext.createTaskContext(executor, scheduledExecutor, TEST_SESSION, DataSize.of(2, GIGABYTE));
         }
 
         public OperatorFactory getOperatorFactory()
@@ -234,7 +235,7 @@ public class BenchmarkScanFilterAndProjectOperator
 
             return SqlToRowExpressionTranslator.translate(
                     expression,
-                    TYPE_ANALYZER.getTypes(TEST_SESSION, TypeProvider.copyOf(symbolTypes), expression),
+                    getTypes(TEST_SESSION, METADATA, TypeProvider.copyOf(symbolTypes), expression),
                     sourceLayout,
                     METADATA,
                     TEST_SESSION,

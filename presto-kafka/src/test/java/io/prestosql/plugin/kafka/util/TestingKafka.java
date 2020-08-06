@@ -14,14 +14,15 @@
 package io.prestosql.plugin.kafka.util;
 
 import com.google.common.collect.ImmutableMap;
-import kafka.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.LongSerializer;
 import org.testcontainers.containers.KafkaContainer;
 
 import java.io.Closeable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 
 import static io.prestosql.plugin.kafka.util.TestUtils.toProperties;
 import static org.testcontainers.containers.KafkaContainer.KAFKA_PORT;
@@ -33,7 +34,7 @@ public class TestingKafka
 
     public TestingKafka()
     {
-        container = new KafkaContainer("5.2.1");
+        container = new KafkaContainer("5.4.1");
     }
 
     public void start()
@@ -47,12 +48,12 @@ public class TestingKafka
         container.close();
     }
 
-    public void createTopics(String topic)
+    public void createTopic(String topic)
     {
-        createTopics(2, 1, new Properties(), topic);
+        createTopic(2, 1, topic);
     }
 
-    public void createTopics(int partitions, int replication, Properties topicProperties, String topic)
+    private void createTopic(int partitions, int replication, String topic)
     {
         try {
             List<String> command = new ArrayList<>();
@@ -61,13 +62,8 @@ public class TestingKafka
             command.add(Integer.toString(partitions));
             command.add("--replication-factor");
             command.add(Integer.toString(replication));
-            command.add("kafka-topics");
             command.add("--topic");
             command.add(topic);
-            for (Map.Entry<Object, Object> property : topicProperties.entrySet()) {
-                command.add("--config");
-                command.add(property.getKey() + "=" + property.getValue());
-            }
 
             container.execInContainer(command.toArray(new String[0]));
         }
@@ -81,27 +77,16 @@ public class TestingKafka
         return container.getContainerIpAddress() + ":" + container.getMappedPort(KAFKA_PORT);
     }
 
-    public CloseableProducer<Long, Object> createProducer()
+    public KafkaProducer<Long, Object> createProducer()
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("metadata.broker.list", getConnectString())
-                .put("serializer.class", JsonEncoder.class.getName())
-                .put("key.serializer.class", NumberEncoder.class.getName())
-                .put("partitioner.class", NumberPartitioner.class.getName())
-                .put("request.required.acks", "1")
+                .put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, getConnectString())
+                .put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, LongSerializer.class.getName())
+                .put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class.getName())
+                .put(ProducerConfig.PARTITIONER_CLASS_CONFIG, NumberPartitioner.class.getName())
+                .put(ProducerConfig.ACKS_CONFIG, "1")
                 .build();
 
-        ProducerConfig producerConfig = new ProducerConfig(toProperties(properties));
-        return new CloseableProducer<>(producerConfig);
-    }
-
-    public static class CloseableProducer<K, V>
-            extends kafka.javaapi.producer.Producer<K, V>
-            implements AutoCloseable
-    {
-        public CloseableProducer(ProducerConfig config)
-        {
-            super(config);
-        }
+        return new KafkaProducer<>(toProperties(properties));
     }
 }

@@ -15,11 +15,13 @@ package io.prestosql.orc.metadata;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.CountingOutputStream;
+import com.google.common.primitives.Longs;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.prestosql.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import io.prestosql.orc.metadata.OrcType.OrcTypeKind;
 import io.prestosql.orc.metadata.Stream.StreamKind;
+import io.prestosql.orc.metadata.statistics.BloomFilter;
 import io.prestosql.orc.metadata.statistics.ColumnStatistics;
 import io.prestosql.orc.metadata.statistics.StripeStatistics;
 import io.prestosql.orc.proto.OrcProto;
@@ -34,10 +36,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.TimeZone;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.orc.metadata.PostScript.MAGIC;
 import static java.lang.Math.toIntExact;
 import static java.util.stream.Collectors.toList;
@@ -112,7 +116,7 @@ public class OrcMetadataWriter
     {
         OrcProto.Footer.Builder builder = OrcProto.Footer.newBuilder()
                 .setNumberOfRows(footer.getNumberOfRows())
-                .setRowIndexStride(footer.getRowsInRowGroup())
+                .setRowIndexStride(footer.getRowsInRowGroup().orElse(0))
                 .addAllStripes(footer.getStripes().stream()
                         .map(OrcMetadataWriter::toStripeInformation)
                         .collect(toList()))
@@ -151,7 +155,8 @@ public class OrcMetadataWriter
                 .addAllSubtypes(type.getFieldTypeIndexes().stream()
                         .map(OrcColumnId::getId)
                         .collect(toList()))
-                .addAllFieldNames(type.getFieldNames());
+                .addAllFieldNames(type.getFieldNames())
+                .addAllAttributes(toStringPairList(type.getAttributes()));
 
         if (type.getLength().isPresent()) {
             builder.setMaximumLength(type.getLength().get());
@@ -206,6 +211,16 @@ public class OrcMetadataWriter
                 return OrcProto.Type.Kind.UNION;
         }
         throw new IllegalArgumentException("Unsupported type: " + orcTypeKind);
+    }
+
+    private static List<OrcProto.StringPair> toStringPairList(Map<String, String> attributes)
+    {
+        return attributes.entrySet().stream()
+                .map(entry -> OrcProto.StringPair.newBuilder()
+                        .setKey(entry.getKey())
+                        .setValue(entry.getValue())
+                        .build())
+                .collect(toImmutableList());
     }
 
     private static OrcProto.ColumnStatistics toColumnStatistics(ColumnStatistics columnStatistics)
@@ -327,6 +342,8 @@ public class OrcMetadataWriter
                 return OrcProto.Stream.Kind.SECONDARY;
             case ROW_INDEX:
                 return OrcProto.Stream.Kind.ROW_INDEX;
+            case BLOOM_FILTER_UTF8:
+                return OrcProto.Stream.Kind.BLOOM_FILTER_UTF8;
         }
         throw new IllegalArgumentException("Unsupported stream kind: " + streamKind);
     }
@@ -373,6 +390,26 @@ public class OrcMetadataWriter
                         .map(Integer::longValue)
                         .collect(toList()))
                 .setStatistics(toColumnStatistics(rowGroupIndex.getColumnStatistics()))
+                .build();
+    }
+
+    @Override
+    public int writeBloomFilters(SliceOutput output, List<BloomFilter> bloomFilters)
+            throws IOException
+    {
+        OrcProto.BloomFilterIndex bloomFilterIndex = OrcProto.BloomFilterIndex.newBuilder()
+                .addAllBloomFilter(bloomFilters.stream()
+                        .map(OrcMetadataWriter::toBloomFilter)
+                        .collect(toList()))
+                .build();
+        return writeProtobufObject(output, bloomFilterIndex);
+    }
+
+    private static OrcProto.BloomFilter toBloomFilter(BloomFilter bloomFilter)
+    {
+        return OrcProto.BloomFilter.newBuilder()
+                .addAllBitset(Longs.asList(bloomFilter.getBitSet()))
+                .setNumHashFunctions(bloomFilter.getNumHashFunctions())
                 .build();
     }
 

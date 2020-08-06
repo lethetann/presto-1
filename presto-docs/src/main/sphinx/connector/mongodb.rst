@@ -34,24 +34,26 @@ Configuration Properties
 
 The following configuration properties are available:
 
-===================================== ==============================================================
-Property Name                         Description
-===================================== ==============================================================
-``mongodb.seeds``                     List of all MongoDB servers
-``mongodb.schema-collection``         A collection which contains schema information
-``mongodb.credentials``               List of credentials
-``mongodb.min-connections-per-host``  The minimum size of the connection pool per host
-``mongodb.connections-per-host``      The maximum size of the connection pool per host
-``mongodb.max-wait-time``             The maximum wait time
-``mongodb.connection-timeout``        The socket connect timeout
-``mongodb.socket-timeout``            The socket timeout
-``mongodb.socket-keep-alive``         Whether keep-alive is enabled on each socket
-``mongodb.ssl.enabled``               Use TLS/SSL for connections to mongod/mongos
-``mongodb.read-preference``           The read preference
-``mongodb.write-concern``             The write concern
-``mongodb.required-replica-set``      The required replica set name
-``mongodb.cursor-batch-size``         The number of elements to return in a batch
-===================================== ==============================================================
+========================================== ==============================================================
+Property Name                              Description
+========================================== ==============================================================
+``mongodb.seeds``                          List of all MongoDB servers
+``mongodb.schema-collection``              A collection which contains schema information
+``mongodb.case-insensitive-name-matching`` Match database and collection names case insensitively
+``mongodb.credentials``                    List of credentials
+``mongodb.min-connections-per-host``       The minimum size of the connection pool per host
+``mongodb.connections-per-host``           The maximum size of the connection pool per host
+``mongodb.max-wait-time``                  The maximum wait time
+``mongodb.max-connection-idle-time``       The maximum idle time of a pooled connection
+``mongodb.connection-timeout``             The socket connect timeout
+``mongodb.socket-timeout``                 The socket timeout
+``mongodb.socket-keep-alive``              Whether keep-alive is enabled on each socket
+``mongodb.ssl.enabled``                    Use TLS/SSL for connections to mongod/mongos
+``mongodb.read-preference``                The read preference
+``mongodb.write-concern``                  The write concern
+``mongodb.required-replica-set``           The required replica set name
+``mongodb.cursor-batch-size``              The number of elements to return in a batch
+========================================== ==============================================================
 
 ``mongodb.seeds``
 ^^^^^^^^^^^^^^^^^
@@ -72,9 +74,9 @@ This property is optional; the default is ``_schema``.
 ``mongodb.credentials``
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-A comma separated list of ``username:password@collection`` credentials.
+A comma separated list of ``username:password@database`` credentials.
 
-This property is optional; no default value.
+This property is optional; no default value. The ``database`` should be the authentication database for the user (e.g. ``admin``).
 
 ``mongodb.min-connections-per-host``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -97,6 +99,14 @@ The maximum wait time in milliseconds, that a thread may wait for a connection t
 A value of ``0`` means that it does not wait. A negative value means to wait indefinitely for a connection to become available.
 
 This property is optional; the default is ``120000``.
+
+``mongodb.max-connection-idle-time``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The maximum idle time of a pooled connection in milliseconds. A value of ``0`` indicates no limit to the idle time.
+A pooled connection that has exceeded its idle time will be closed and replaced when necessary by a new connection.
+
+This property is optional; the default is ``0``.
 
 ``mongodb.connection-timeout``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -261,3 +271,10 @@ MongoDB collection has the special field ``_id``. The connector tries to follow 
 .. note::
 
     Unfortunately, there is no way to represent ``_id`` fields more fancy like ``55b151633864d6438c61a9ce``.
+
+Limitations
+-----------
+
+The following operations are not supported:
+
+- Row deletion with :doc:`/sql/delete`

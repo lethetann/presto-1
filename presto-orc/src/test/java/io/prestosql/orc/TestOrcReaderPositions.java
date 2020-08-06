@@ -411,7 +411,7 @@ public class TestOrcReaderPositions
     private static void createFileWithOnlyUserMetadata(File file, Map<String, String> metadata)
             throws IOException
     {
-        Configuration conf = new Configuration();
+        Configuration conf = new Configuration(false);
         OrcFile.WriterOptions writerOptions = OrcFile.writerOptions(conf)
                 .memory(new NullMemoryManager())
                 .inspector(createSettableStructObjectInspector("test", BIGINT))
@@ -463,9 +463,7 @@ public class TestOrcReaderPositions
         StructField field = objectInspector.getAllStructFieldRefs().get(0);
 
         StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < initialLength; i++) {
-            builder.append("0");
-        }
+        builder.append("0".repeat(Math.max(0, initialLength)));
         String seedString = builder.toString();
 
         // gradually grow the length of a cell

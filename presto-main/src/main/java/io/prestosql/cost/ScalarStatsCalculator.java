@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableMap;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.metadata.Metadata;
+import io.prestosql.security.AllowAllAccessControl;
 import io.prestosql.spi.type.BigintType;
 import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.IntegerType;
@@ -49,6 +50,7 @@ import java.util.Map;
 import java.util.OptionalDouble;
 
 import static io.prestosql.cost.StatsUtil.toStatsRepresentation;
+import static io.prestosql.sql.analyzer.ExpressionAnalyzer.createConstantAnalyzer;
 import static io.prestosql.sql.planner.LiteralInterpreter.evaluate;
 import static io.prestosql.util.MoreMath.max;
 import static io.prestosql.util.MoreMath.min;
@@ -67,7 +69,7 @@ public class ScalarStatsCalculator
     @Inject
     public ScalarStatsCalculator(Metadata metadata, TypeAnalyzer typeAnalyzer)
     {
-        this.metadata = requireNonNull(metadata, "metadata can not be null");
+        this.metadata = requireNonNull(metadata, "metadata cannot be null");
         this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
     }
 
@@ -111,8 +113,10 @@ public class ScalarStatsCalculator
         @Override
         protected SymbolStatsEstimate visitLiteral(Literal node, Void context)
         {
-            Object value = evaluate(metadata, session.toConnectorSession(), node);
-            Type type = ExpressionAnalyzer.createConstantAnalyzer(metadata, session, ImmutableMap.of(), WarningCollector.NOOP).analyze(node, Scope.create());
+            ExpressionAnalyzer analyzer = createConstantAnalyzer(metadata, new AllowAllAccessControl(), session, ImmutableMap.of(), WarningCollector.NOOP);
+            Type type = analyzer.analyze(node, Scope.create());
+            Object value = evaluate(metadata, session.toConnectorSession(), analyzer.getExpressionTypes(), node);
+
             OptionalDouble doubleValue = toStatsRepresentation(metadata, session, type, value);
             SymbolStatsEstimate.Builder estimate = SymbolStatsEstimate.builder()
                     .setNullsFraction(0)
@@ -152,6 +156,7 @@ public class ScalarStatsCalculator
         {
             ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
                     metadata,
+                    new AllowAllAccessControl(),
                     session,
                     types,
                     emptyMap(),

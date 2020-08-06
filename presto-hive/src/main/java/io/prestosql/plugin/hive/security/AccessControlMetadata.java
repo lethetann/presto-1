@@ -23,6 +23,7 @@ import io.prestosql.spi.security.RoleGrant;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
@@ -56,6 +57,14 @@ public interface AccessControlMetadata
     }
 
     /**
+     * List principals for a given role, not recursively.
+     */
+    default Set<RoleGrant> listAllRoleGrants(ConnectorSession session, Optional<Set<String>> roles, Optional<Set<String>> grantees, OptionalLong limit)
+    {
+        throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
+    }
+
+    /**
      * List role grants for a given principal, not recursively.
      */
     default Set<RoleGrant> listRoleGrants(ConnectorSession session, HivePrincipal principal)
@@ -68,7 +77,7 @@ public interface AccessControlMetadata
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<HivePrincipal> grantees, boolean withAdminOption, Optional<HivePrincipal> grantor)
+    default void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, Optional<HivePrincipal> grantor)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
     }
@@ -78,7 +87,7 @@ public interface AccessControlMetadata
      *
      * @param grantor represents the principal specified by GRANTED BY statement
      */
-    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<HivePrincipal> grantees, boolean adminOptionFor, Optional<HivePrincipal> grantor)
+    default void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, Optional<HivePrincipal> grantor)
     {
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support roles");
     }

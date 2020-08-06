@@ -25,19 +25,19 @@ import io.prestosql.spi.type.TypeNotFoundException;
 import io.prestosql.spi.type.TypeParameter;
 import io.prestosql.spi.type.TypeSignature;
 import io.prestosql.spi.type.TypeSignatureParameter;
+import io.prestosql.sql.analyzer.FeaturesConfig;
 import io.prestosql.sql.parser.SqlParser;
 import io.prestosql.type.CharParametricType;
 import io.prestosql.type.DecimalParametricType;
+import io.prestosql.type.Re2JRegexpType;
 import io.prestosql.type.VarcharParametricType;
 
 import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
@@ -57,8 +57,8 @@ import static io.prestosql.spi.type.RealType.REAL;
 import static io.prestosql.spi.type.SmallintType.SMALLINT;
 import static io.prestosql.spi.type.TimeType.TIME;
 import static io.prestosql.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static io.prestosql.spi.type.TimestampType.TIMESTAMP;
-import static io.prestosql.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static io.prestosql.spi.type.TimestampParametricType.TIMESTAMP;
+import static io.prestosql.spi.type.TimestampWithTimeZoneParametricType.TIMESTAMP_WITH_TIME_ZONE;
 import static io.prestosql.spi.type.TinyintType.TINYINT;
 import static io.prestosql.spi.type.VarbinaryType.VARBINARY;
 import static io.prestosql.sql.analyzer.TypeSignatureTranslator.toTypeSignature;
@@ -74,7 +74,6 @@ import static io.prestosql.type.JsonPathType.JSON_PATH;
 import static io.prestosql.type.JsonType.JSON;
 import static io.prestosql.type.LikePatternType.LIKE_PATTERN;
 import static io.prestosql.type.MapParametricType.MAP;
-import static io.prestosql.type.Re2JRegexpType.RE2J_REGEXP;
 import static io.prestosql.type.RowParametricType.ROW;
 import static io.prestosql.type.UnknownType.UNKNOWN;
 import static io.prestosql.type.UuidType.UUID;
@@ -91,12 +90,9 @@ final class TypeRegistry
 
     private final Cache<TypeSignature, Type> parametricTypeCache;
 
-    @Inject
-    public TypeRegistry(Set<Type> types)
+    public TypeRegistry(FeaturesConfig featuresConfig)
     {
-        requireNonNull(types, "types is null");
-
-        // Manually register UNKNOWN type without a verifyTypeClass call since it is a special type that can not be used by functions
+        // Manually register UNKNOWN type without a verifyTypeClass call since it is a special type that cannot be used by functions
         this.types.put(UNKNOWN.getTypeSignature(), UNKNOWN);
 
         // always add the built-in types; Presto will not function without these
@@ -112,15 +108,13 @@ final class TypeRegistry
         addType(DATE);
         addType(TIME);
         addType(TIME_WITH_TIME_ZONE);
-        addType(TIMESTAMP);
-        addType(TIMESTAMP_WITH_TIME_ZONE);
         addType(INTERVAL_YEAR_MONTH);
         addType(INTERVAL_DAY_TIME);
         addType(HYPER_LOG_LOG);
         addType(SET_DIGEST);
         addType(P4_HYPER_LOG_LOG);
         addType(JONI_REGEXP);
-        addType(RE2J_REGEXP);
+        addType(new Re2JRegexpType(featuresConfig.getRe2JDfaStatesLimit(), featuresConfig.getRe2JDfaRetries()));
         addType(LIKE_PATTERN);
         addType(JSON_PATH);
         addType(COLOR);
@@ -136,10 +130,9 @@ final class TypeRegistry
         addParametricType(MAP);
         addParametricType(FUNCTION);
         addParametricType(QDIGEST);
+        addParametricType(TIMESTAMP);
+        addParametricType(TIMESTAMP_WITH_TIME_ZONE);
 
-        for (Type type : types) {
-            addType(type);
-        }
         parametricTypeCache = CacheBuilder.newBuilder()
                 .maximumSize(1000)
                 .build();

@@ -102,19 +102,19 @@ public class TupleDomainOrcPredicate
             return false;
         }
 
-        // if bloom filters are not enabled, we can not restrict the range overlap
+        // if bloom filters are not enabled, we cannot restrict the range overlap
         if (!orcBloomFiltersEnabled) {
             return true;
         }
 
-        // if there an overlap in null values, the bloom filter can not eliminate the overlap
+        // if there an overlap in null values, the bloom filter cannot eliminate the overlap
         if (predicateDomain.isNullAllowed() && stripeDomain.isNullAllowed()) {
             return true;
         }
 
         // extract the discrete values from the predicate
         Optional<Collection<Object>> discreteValues = extractDiscreteValues(predicateDomain.getValues());
-        if (!discreteValues.isPresent()) {
+        if (discreteValues.isEmpty()) {
             // values are not discrete, so we can't exclude this section
             return true;
         }
@@ -126,10 +126,7 @@ public class TupleDomainOrcPredicate
         }
 
         // if none of the discrete predicate values are found in the bloom filter, there is no overlap and the section should be skipped
-        if (discreteValues.get().stream().noneMatch(value -> checkInBloomFilter(bloomFilter, value, stripeDomain.getType()))) {
-            return false;
-        }
-        return true;
+        return discreteValues.get().stream().anyMatch(value -> checkInBloomFilter(bloomFilter, value, stripeDomain.getType()));
     }
 
     @VisibleForTesting
@@ -154,7 +151,7 @@ public class TupleDomainOrcPredicate
     @VisibleForTesting
     public static boolean checkInBloomFilter(BloomFilter bloomFilter, Object predicateValue, Type sqlType)
     {
-        if (sqlType == TINYINT || sqlType == SMALLINT || sqlType == INTEGER || sqlType == BIGINT || sqlType == DATE || sqlType == TIMESTAMP) {
+        if (sqlType == TINYINT || sqlType == SMALLINT || sqlType == INTEGER || sqlType == BIGINT || sqlType == DATE || sqlType.equals(TIMESTAMP)) {
             return bloomFilter.testLong(((Number) predicateValue).longValue());
         }
 

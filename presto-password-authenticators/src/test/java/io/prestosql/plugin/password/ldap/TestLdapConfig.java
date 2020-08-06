@@ -18,9 +18,13 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
+import javax.validation.constraints.AssertTrue;
 import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Pattern;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -37,28 +41,46 @@ public class TestLdapConfig
     {
         assertRecordedDefaults(recordDefaults(LdapConfig.class)
                 .setLdapUrl(null)
+                .setAllowInsecure(false)
+                .setTrustCertificate(null)
                 .setUserBindSearchPattern(null)
                 .setUserBaseDistinguishedName(null)
                 .setGroupAuthorizationSearchPattern(null)
+                .setBindDistingushedName(null)
+                .setBindPassword(null)
+                .setIgnoreReferrals(false)
                 .setLdapCacheTtl(new Duration(1, TimeUnit.HOURS)));
     }
 
     @Test
     public void testExplicitConfig()
+            throws IOException
     {
+        Path trustCertificateFile = Files.createTempFile(null, null);
+
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("ldap.url", "ldaps://localhost:636")
+                .put("ldap.allow-insecure", "true")
+                .put("ldap.ssl-trust-certificate", trustCertificateFile.toString())
                 .put("ldap.user-bind-pattern", "uid=${USER},ou=org,dc=test,dc=com")
                 .put("ldap.user-base-dn", "dc=test,dc=com")
                 .put("ldap.group-auth-pattern", "&(objectClass=user)(memberOf=cn=group)(user=username)")
+                .put("ldap.bind-dn", "CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
+                .put("ldap.bind-password", "password1234")
+                .put("ldap.ignore-referrals", "true")
                 .put("ldap.cache-ttl", "2m")
                 .build();
 
         LdapConfig expected = new LdapConfig()
                 .setLdapUrl("ldaps://localhost:636")
+                .setAllowInsecure(true)
+                .setTrustCertificate(trustCertificateFile.toFile())
                 .setUserBindSearchPattern("uid=${USER},ou=org,dc=test,dc=com")
                 .setUserBaseDistinguishedName("dc=test,dc=com")
                 .setGroupAuthorizationSearchPattern("&(objectClass=user)(memberOf=cn=group)(user=username)")
+                .setBindDistingushedName("CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
+                .setBindPassword("password1234")
+                .setIgnoreReferrals(true)
                 .setLdapCacheTtl(new Duration(2, TimeUnit.MINUTES));
 
         assertFullMapping(properties, expected);
@@ -73,11 +95,24 @@ public class TestLdapConfig
                 .setUserBaseDistinguishedName("dc=test,dc=com")
                 .setGroupAuthorizationSearchPattern("&(objectClass=user)(memberOf=cn=group)(user=username)"));
 
-        assertFailsValidation(new LdapConfig().setLdapUrl("ldap://"), "ldapUrl", "LDAP without SSL/TLS unsupported. Expected ldaps://", Pattern.class);
-        assertFailsValidation(new LdapConfig().setLdapUrl("localhost"), "ldapUrl", "LDAP without SSL/TLS unsupported. Expected ldaps://", Pattern.class);
-        assertFailsValidation(new LdapConfig().setLdapUrl("ldaps:/localhost"), "ldapUrl", "LDAP without SSL/TLS unsupported. Expected ldaps://", Pattern.class);
+        assertValidates(new LdapConfig()
+                .setLdapUrl("ldap://localhost")
+                .setAllowInsecure(true)
+                .setUserBindSearchPattern("uid=${USER},ou=org,dc=test,dc=com")
+                .setUserBaseDistinguishedName("dc=test,dc=com")
+                .setGroupAuthorizationSearchPattern("&(objectClass=user)(memberOf=cn=group)(user=username)"));
+
+        assertFailsValidation(
+                new LdapConfig()
+                        .setLdapUrl("ldap://")
+                        .setAllowInsecure(false),
+                "urlConfigurationValid",
+                "Connecting to the LDAP server without SSL enabled requires `ldap.allow-insecure=true`",
+                AssertTrue.class);
+
+        assertFailsValidation(new LdapConfig().setLdapUrl("localhost"), "ldapUrl", "Invalid LDAP server URL. Expected ldap:// or ldaps://", Pattern.class);
+        assertFailsValidation(new LdapConfig().setLdapUrl("ldaps:/localhost"), "ldapUrl", "Invalid LDAP server URL. Expected ldap:// or ldaps://", Pattern.class);
 
         assertFailsValidation(new LdapConfig(), "ldapUrl", "may not be null", NotNull.class);
-        assertFailsValidation(new LdapConfig(), "userBindSearchPattern", "may not be null", NotNull.class);
     }
 }

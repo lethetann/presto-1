@@ -21,6 +21,7 @@ import io.prestosql.spi.connector.SchemaTableName;
 import io.prestosql.spi.predicate.TupleDomain;
 
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -100,6 +101,30 @@ public class IcebergTableHandle
     }
 
     @Override
+    public boolean equals(Object o)
+    {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+
+        IcebergTableHandle that = (IcebergTableHandle) o;
+        return Objects.equals(schemaName, that.schemaName) &&
+                Objects.equals(tableName, that.tableName) &&
+                tableType == that.tableType &&
+                Objects.equals(snapshotId, that.snapshotId) &&
+                Objects.equals(predicate, that.predicate);
+    }
+
+    @Override
+    public int hashCode()
+    {
+        return Objects.hash(schemaName, tableName, tableType, snapshotId, predicate);
+    }
+
+    @Override
     public String toString()
     {
         return getSchemaTableName().toString();
@@ -128,7 +153,7 @@ public class IcebergTableHandle
         }
 
         Optional<Long> version = Optional.empty();
-        if (type == TableType.DATA || type == TableType.PARTITIONS || type == TableType.MANIFESTS) {
+        if (type == TableType.DATA || type == TableType.PARTITIONS || type == TableType.MANIFESTS || type == TableType.FILES) {
             if (ver1 != null && ver2 != null) {
                 throw new PrestoException(NOT_SUPPORTED, "Invalid Iceberg table name (cannot specify two @ versions): " + name);
             }

@@ -16,7 +16,7 @@ package io.prestosql.plugin.hive;
 import io.prestosql.testing.AbstractTestWindowQueries;
 import io.prestosql.testing.QueryRunner;
 
-import static io.airlift.tpch.TpchTable.getTables;
+import static io.prestosql.tpch.TpchTable.getTables;
 
 public class TestHiveDistributedWindowQueries
         extends AbstractTestWindowQueries
@@ -25,6 +25,8 @@ public class TestHiveDistributedWindowQueries
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return HiveQueryRunner.createQueryRunner(getTables());
+        return HiveQueryRunner.builder()
+                .setInitialTables(getTables())
+                .build();
     }
 }

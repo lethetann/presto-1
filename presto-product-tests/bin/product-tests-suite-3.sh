@@ -2,22 +2,31 @@
 
 set -xeuo pipefail
 
-exit_code=0
+DISTRO_SKIP_GROUP="${DISTRO_SKIP_GROUP:-}"
+DISTRO_SKIP_TEST="${DISTRO_SKIP_TEST:-}"
 
-presto-product-tests/bin/run_on_docker.sh \
-    multinode-tls \
-    -g smoke,cli,group-by,join,tls \
-    || exit_code=1
+suite_exit_code=0
 
-presto-product-tests/bin/run_on_docker.sh \
-    multinode-tls-kerberos \
-    -g cli,group-by,join,tls \
-    || exit_code=1
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment multinode-tls \
+    -- -g smoke,cli,group-by,join,tls -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
 
-presto-product-tests/bin/run_on_docker.sh \
-    singlenode-kerberos-hdfs-impersonation-with-wire-encryption \
-    -g storage_formats,cli,hdfs_impersonation,authorization \
-    || exit_code=1
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment multinode-tls-kerberos \
+    -- -g cli,group-by,join,tls -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
 
-echo "$0: exiting with ${exit_code}"
-exit "${exit_code}"
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode-kerberos-hdfs-impersonation-with-wire-encryption \
+    -- -g storage_formats,cli,hdfs_impersonation,authorization -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
+
+# Smoke run af a few tests in environment with dfs.data.transfer.protection=true. Arbitrary tests which access HDFS data were chosen.
+presto-product-tests-launcher/bin/run-launcher test run \
+    --environment singlenode-kerberos-hdfs-impersonation-with-data-protection \
+    -- -t TestHiveStorageFormats.testOrcTableCreatedInPresto,TestHiveCreateTable.testCreateTable  -x "${DISTRO_SKIP_GROUP}" -e "${DISTRO_SKIP_TEST}" \
+    || suite_exit_code=1
+
+echo "$0: exiting with ${suite_exit_code}"
+exit "${suite_exit_code}"

@@ -15,8 +15,6 @@ package io.prestosql.sql.gen;
 
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
-import io.airlift.tpch.LineItem;
-import io.airlift.tpch.LineItemGenerator;
 import io.prestosql.metadata.Metadata;
 import io.prestosql.operator.DriverYieldSignal;
 import io.prestosql.operator.project.PageProcessor;
@@ -27,6 +25,8 @@ import io.prestosql.sql.relational.CallExpression;
 import io.prestosql.sql.relational.RowExpression;
 import io.prestosql.sql.relational.SpecialForm;
 import io.prestosql.sql.relational.SpecialForm.Form;
+import io.prestosql.tpch.LineItem;
+import io.prestosql.tpch.LineItemGenerator;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Measurement;
@@ -194,32 +194,27 @@ public class BenchmarkPageProcessor
                 BOOLEAN,
                 new CallExpression(
                         metadata.resolveOperator(GREATER_THAN_OR_EQUAL, ImmutableList.of(VARCHAR, VARCHAR)),
-                        BOOLEAN,
                         ImmutableList.of(field(SHIP_DATE, VARCHAR), constant(MIN_SHIP_DATE, VARCHAR))),
                 new SpecialForm(
                         Form.AND,
                         BOOLEAN,
                         new CallExpression(
                                 metadata.resolveOperator(LESS_THAN, ImmutableList.of(VARCHAR, VARCHAR)),
-                                BOOLEAN,
                                 ImmutableList.of(field(SHIP_DATE, VARCHAR), constant(MAX_SHIP_DATE, VARCHAR))),
                         new SpecialForm(
                                 Form.AND,
                                 BOOLEAN,
                                 new CallExpression(
                                         metadata.resolveOperator(GREATER_THAN_OR_EQUAL, ImmutableList.of(DOUBLE, DOUBLE)),
-                                        BOOLEAN,
                                         ImmutableList.of(field(DISCOUNT, DOUBLE), constant(0.05, DOUBLE))),
                                 new SpecialForm(
                                         Form.AND,
                                         BOOLEAN,
                                         new CallExpression(
                                                 metadata.resolveOperator(LESS_THAN_OR_EQUAL, ImmutableList.of(DOUBLE, DOUBLE)),
-                                                BOOLEAN,
                                                 ImmutableList.of(field(DISCOUNT, DOUBLE), constant(0.07, DOUBLE))),
                                         new CallExpression(
                                                 metadata.resolveOperator(LESS_THAN, ImmutableList.of(DOUBLE, DOUBLE)),
-                                                BOOLEAN,
                                                 ImmutableList.of(field(QUANTITY, DOUBLE), constant(24.0, DOUBLE)))))));
     }
 
@@ -227,7 +222,6 @@ public class BenchmarkPageProcessor
     {
         return new CallExpression(
                 metadata.resolveOperator(MULTIPLY, ImmutableList.of(DOUBLE, DOUBLE)),
-                DOUBLE,
                 ImmutableList.of(field(EXTENDED_PRICE, DOUBLE), field(DISCOUNT, DOUBLE)));
     }
 }

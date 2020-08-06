@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import io.prestosql.Session;
 import io.prestosql.execution.warnings.WarningCollector;
 import io.prestosql.metadata.Metadata;
+import io.prestosql.security.AllowAllAccessControl;
 import io.prestosql.spi.type.Type;
 import io.prestosql.sql.analyzer.ExpressionAnalyzer;
 import io.prestosql.sql.analyzer.Scope;
@@ -120,6 +121,7 @@ public class FilterStatsCalculator
     {
         ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
                 metadata,
+                new AllowAllAccessControl(),
                 session,
                 types,
                 emptyMap(),
@@ -393,7 +395,7 @@ public class FilterStatsCalculator
         @Override
         protected PlanNodeStatsEstimate visitFunctionCall(FunctionCall node, Void context)
         {
-            if (isDynamicFilter(metadata, node)) {
+            if (isDynamicFilter(node)) {
                 return process(BooleanLiteral.TRUE_LITERAL, context);
             }
             return PlanNodeStatsEstimate.unknown();
@@ -408,6 +410,7 @@ public class FilterStatsCalculator
 
             ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
                     metadata,
+                    new AllowAllAccessControl(),
                     session,
                     types,
                     ImmutableMap.of(),
@@ -429,7 +432,7 @@ public class FilterStatsCalculator
 
         private OptionalDouble doubleValueFromLiteral(Type type, Literal literal)
         {
-            Object literalValue = LiteralInterpreter.evaluate(metadata, session.toConnectorSession(), literal);
+            Object literalValue = LiteralInterpreter.evaluate(metadata, session.toConnectorSession(), getExpressionTypes(session, literal, types), literal);
             return toStatsRepresentation(metadata, session, type, literalValue);
         }
     }

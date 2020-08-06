@@ -173,7 +173,9 @@ public final class KuduTableProperties
     {
         requireNonNull(tableProperties);
 
+        @SuppressWarnings("unchecked")
         List<String> hashColumns = (List<String>) tableProperties.get(PARTITION_BY_HASH_COLUMNS);
+        @SuppressWarnings("unchecked")
         List<String> hashColumns2 = (List<String>) tableProperties.get(PARTITION_BY_HASH_COLUMNS_2);
 
         PartitionDesign design = new PartitionDesign();
@@ -191,6 +193,7 @@ public final class KuduTableProperties
             throw new PrestoException(GENERIC_USER_ERROR, "Table property " + PARTITION_BY_HASH_COLUMNS_2 + " is only allowed if there is also " + PARTITION_BY_HASH_COLUMNS);
         }
 
+        @SuppressWarnings("unchecked")
         List<String> rangeColumns = (List<String>) tableProperties.get(PARTITION_BY_RANGE_COLUMNS);
         if (!rangeColumns.isEmpty()) {
             RangePartitionDefinition range = new RangePartitionDefinition();
@@ -369,7 +372,7 @@ public final class KuduTableProperties
             PartitionSchema.RangeSchema rangeSchema = partitionSchema.getRangeSchema();
             List<Integer> rangeColumns = rangeSchema.getColumns();
 
-            final int numColumns = rangeColumns.size();
+            int numColumns = rangeColumns.size();
 
             PartialRow bound = KeyEncoderAccessor.decodeRangePartitionKey(schema, partitionSchema, rangeKey);
 

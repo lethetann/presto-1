@@ -17,11 +17,14 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.io.Closer;
 import com.google.common.net.HostAndPort;
 import com.google.inject.Injector;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
+import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.discovery.client.Announcer;
@@ -41,6 +44,7 @@ import io.prestosql.connector.CatalogName;
 import io.prestosql.connector.ConnectorManager;
 import io.prestosql.cost.StatsCalculator;
 import io.prestosql.dispatcher.DispatchManager;
+import io.prestosql.eventlistener.EventListenerConfig;
 import io.prestosql.eventlistener.EventListenerManager;
 import io.prestosql.execution.QueryInfo;
 import io.prestosql.execution.QueryManager;
@@ -55,19 +59,22 @@ import io.prestosql.metadata.CatalogManager;
 import io.prestosql.metadata.InternalNode;
 import io.prestosql.metadata.InternalNodeManager;
 import io.prestosql.metadata.Metadata;
+import io.prestosql.plugin.base.security.AllowAllSystemAccessControl;
 import io.prestosql.security.AccessControl;
 import io.prestosql.security.AccessControlManager;
+import io.prestosql.security.GroupProviderManager;
 import io.prestosql.server.GracefulShutdownHandler;
 import io.prestosql.server.PluginManager;
 import io.prestosql.server.ServerMainModule;
 import io.prestosql.server.SessionPropertyDefaults;
 import io.prestosql.server.ShutdownAction;
+import io.prestosql.server.security.CertificateAuthenticatorManager;
 import io.prestosql.server.security.ServerSecurityModule;
 import io.prestosql.spi.Plugin;
 import io.prestosql.spi.QueryId;
+import io.prestosql.spi.security.GroupProvider;
 import io.prestosql.split.PageSourceManager;
 import io.prestosql.split.SplitManager;
-import io.prestosql.sql.parser.SqlParserOptions;
 import io.prestosql.sql.planner.NodePartitioningManager;
 import io.prestosql.sql.planner.Plan;
 import io.prestosql.testing.ProcedureTester;
@@ -78,6 +85,7 @@ import io.prestosql.transaction.TransactionManager;
 import org.weakref.jmx.guice.MBeanModule;
 
 import javax.annotation.concurrent.GuardedBy;
+import javax.management.MBeanServer;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -87,7 +95,6 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -97,6 +104,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static com.google.inject.util.Modules.EMPTY_MODULE;
 import static io.airlift.discovery.client.ServiceAnnouncement.serviceAnnouncement;
 import static java.lang.Integer.parseInt;
 import static java.nio.file.Files.createTempDirectory;
@@ -107,6 +115,16 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class TestingPrestoServer
         implements Closeable
 {
+    public static TestingPrestoServer create()
+    {
+        return builder().build();
+    }
+
+    public static Builder builder()
+    {
+        return new Builder();
+    }
+
     private final Injector injector;
     private final Path baseDataDir;
     private final boolean preserveData;
@@ -135,6 +153,7 @@ public class TestingPrestoServer
     private final TaskManager taskManager;
     private final GracefulShutdownHandler gracefulShutdownHandler;
     private final ShutdownAction shutdownAction;
+    private final MBeanServer mBeanServer;
     private final boolean coordinator;
 
     public static class TestShutdownAction
@@ -164,29 +183,15 @@ public class TestingPrestoServer
         }
     }
 
-    public TestingPrestoServer()
-    {
-        this(ImmutableList.of());
-    }
-
-    public TestingPrestoServer(List<Module> additionalModules)
-    {
-        this(true, ImmutableMap.of(), null, null, new SqlParserOptions(), additionalModules, Optional.empty());
-    }
-
-    public TestingPrestoServer(Map<String, String> properties)
-    {
-        this(true, properties, null, null, new SqlParserOptions(), ImmutableList.of(), Optional.empty());
-    }
-
-    public TestingPrestoServer(
+    private TestingPrestoServer(
             boolean coordinator,
             Map<String, String> properties,
-            String environment,
-            URI discoveryUri,
-            SqlParserOptions parserOptions,
-            List<Module> additionalModules,
-            Optional<Path> baseDataDir)
+            Optional<String> environment,
+            Optional<URI> discoveryUri,
+            Module additionalModule,
+            Optional<Path> baseDataDir,
+            String systemAccessControlName,
+            Map<String, String> systemAccessControlProperties)
     {
         this.coordinator = coordinator;
 
@@ -202,7 +207,6 @@ public class TestingPrestoServer
         ImmutableMap.Builder<String, String> serverProperties = ImmutableMap.<String, String>builder()
                 .putAll(properties)
                 .put("coordinator", String.valueOf(coordinator))
-                .put("presto.version", "testversion")
                 .put("task.concurrency", "4")
                 .put("task.max-worker-threads", "4")
                 .put("exchange.client-threads", "4");
@@ -213,7 +217,7 @@ public class TestingPrestoServer
         }
 
         ImmutableList.Builder<Module> modules = ImmutableList.<Module>builder()
-                .add(new TestingNodeModule(Optional.ofNullable(environment)))
+                .add(new TestingNodeModule(environment))
                 .add(new TestingHttpServerModule(parseInt(coordinator ? coordinatorPort : "0")))
                 .add(new JsonModule())
                 .add(new JaxrsModule())
@@ -222,36 +226,43 @@ public class TestingPrestoServer
                 .add(new EventModule())
                 .add(new TraceTokenModule())
                 .add(new ServerSecurityModule())
-                .add(new ServerMainModule(parserOptions))
+                .add(new ServerMainModule("testversion"))
                 .add(new TestingWarningCollectorModule())
                 .add(binder -> {
+                    binder.bind(String.class)
+                            .annotatedWith(TestingAccessControlManager.ForSystemAccessControl.class)
+                            .toInstance(systemAccessControlName);
+                    binder.bind(new TypeLiteral<Map<String, String>>() {})
+                            .annotatedWith(TestingAccessControlManager.ForSystemAccessControl.class)
+                            .toInstance(ImmutableMap.copyOf(systemAccessControlProperties));
+                    binder.bind(EventListenerConfig.class).in(Scopes.SINGLETON);
                     binder.bind(TestingAccessControlManager.class).in(Scopes.SINGLETON);
                     binder.bind(TestingEventListenerManager.class).in(Scopes.SINGLETON);
                     binder.bind(AccessControlManager.class).to(TestingAccessControlManager.class).in(Scopes.SINGLETON);
                     binder.bind(EventListenerManager.class).to(TestingEventListenerManager.class).in(Scopes.SINGLETON);
+                    binder.bind(GroupProviderManager.class).in(Scopes.SINGLETON);
+                    binder.bind(GroupProvider.class).toInstance(user -> ImmutableSet.of());
                     binder.bind(AccessControl.class).to(AccessControlManager.class).in(Scopes.SINGLETON);
                     binder.bind(ShutdownAction.class).to(TestShutdownAction.class).in(Scopes.SINGLETON);
                     binder.bind(GracefulShutdownHandler.class).in(Scopes.SINGLETON);
                     binder.bind(ProcedureTester.class).in(Scopes.SINGLETON);
                 });
 
-        if (discoveryUri != null) {
+        if (discoveryUri.isPresent()) {
             requireNonNull(environment, "environment required when discoveryUri is present");
-            serverProperties.put("discovery.uri", discoveryUri.toString());
+            serverProperties.put("discovery.uri", discoveryUri.get().toString());
             modules.add(new DiscoveryModule());
         }
         else {
             modules.add(new TestingDiscoveryModule());
         }
 
-        modules.addAll(additionalModules);
+        modules.add(additionalModule);
 
         Bootstrap app = new Bootstrap(modules.build());
 
         Map<String, String> optionalProperties = new HashMap<>();
-        if (environment != null) {
-            optionalProperties.put("node.environment", environment);
-        }
+        environment.ifPresent(env -> optionalProperties.put("node.environment", env));
 
         injector = app
                 .strictConfig()
@@ -280,11 +291,12 @@ public class TestingPrestoServer
         if (coordinator) {
             dispatchManager = injector.getInstance(DispatchManager.class);
             queryManager = (SqlQueryManager) injector.getInstance(QueryManager.class);
-            resourceGroupManager = Optional.of(injector.getInstance(InternalResourceGroupManager.class));
+            resourceGroupManager = Optional.of((InternalResourceGroupManager<?>) injector.getInstance(InternalResourceGroupManager.class));
             sessionPropertyDefaults = injector.getInstance(SessionPropertyDefaults.class);
             nodePartitioningManager = injector.getInstance(NodePartitioningManager.class);
             clusterMemoryManager = injector.getInstance(ClusterMemoryManager.class);
             statsCalculator = injector.getInstance(StatsCalculator.class);
+            injector.getInstance(CertificateAuthenticatorManager.class).useDefaultAuthenticator();
         }
         else {
             dispatchManager = null;
@@ -301,7 +313,12 @@ public class TestingPrestoServer
         gracefulShutdownHandler = injector.getInstance(GracefulShutdownHandler.class);
         taskManager = injector.getInstance(TaskManager.class);
         shutdownAction = injector.getInstance(ShutdownAction.class);
+        mBeanServer = injector.getInstance(MBeanServer.class);
         announcer = injector.getInstance(Announcer.class);
+
+        accessControl.loadSystemAccessControl(
+                injector.getInstance(Key.get(String.class, TestingAccessControlManager.ForSystemAccessControl.class)),
+                injector.getInstance(Key.get(new TypeLiteral<Map<String, String>>() {}, TestingAccessControlManager.ForSystemAccessControl.class)));
 
         announcer.forceAnnounce();
 
@@ -312,15 +329,18 @@ public class TestingPrestoServer
     public void close()
             throws IOException
     {
-        try {
-            if (lifeCycleManager != null) {
-                lifeCycleManager.stop();
-            }
-        }
-        finally {
-            if (isDirectory(baseDataDir) && !preserveData) {
-                deleteRecursively(baseDataDir, ALLOW_INSECURE);
-            }
+        try (Closer closer = Closer.create()) {
+            closer.register(() -> {
+                if (isDirectory(baseDataDir) && !preserveData) {
+                    deleteRecursively(baseDataDir, ALLOW_INSECURE);
+                }
+            });
+
+            closer.register(() -> {
+                if (lifeCycleManager != null) {
+                    lifeCycleManager.stop();
+                }
+            });
         }
     }
 
@@ -342,6 +362,11 @@ public class TestingPrestoServer
     public Plan getQueryPlan(QueryId queryId)
     {
         return queryManager.getQueryPlan(queryId);
+    }
+
+    public QueryInfo getFullQueryInfo(QueryId queryId)
+    {
+        return queryManager.getFullQueryInfo(queryId);
     }
 
     public void addFinalQueryInfoListener(QueryId queryId, StateChangeListener<QueryInfo> stateChangeListener)
@@ -454,6 +479,11 @@ public class TestingPrestoServer
         return clusterMemoryManager;
     }
 
+    public MBeanServer getMbeanServer()
+    {
+        return mBeanServer;
+    }
+
     public GracefulShutdownHandler getGracefulShutdownHandler()
     {
         return gracefulShutdownHandler;
@@ -532,6 +562,74 @@ public class TestingPrestoServer
         }
         catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+    }
+
+    public static class Builder
+    {
+        private boolean coordinator = true;
+        private Map<String, String> properties = ImmutableMap.of();
+        private Optional<String> environment = Optional.empty();
+        private Optional<URI> discoveryUri = Optional.empty();
+        private Module additionalModule = EMPTY_MODULE;
+        private Optional<Path> baseDataDir = Optional.empty();
+        private String systemAccessControlName = AllowAllSystemAccessControl.NAME;
+        private Map<String, String> systemAccessControlProperties = ImmutableMap.of();
+
+        public Builder setCoordinator(boolean coordinator)
+        {
+            this.coordinator = coordinator;
+            return this;
+        }
+
+        public Builder setProperties(Map<String, String> properties)
+        {
+            this.properties = ImmutableMap.copyOf(requireNonNull(properties, "properties is null"));
+            return this;
+        }
+
+        public Builder setEnvironment(String environment)
+        {
+            this.environment = Optional.of(environment);
+            return this;
+        }
+
+        public Builder setDiscoveryUri(URI discoveryUri)
+        {
+            this.discoveryUri = Optional.of(discoveryUri);
+            return this;
+        }
+
+        public Builder setAdditionalModule(Module additionalModule)
+        {
+            this.additionalModule = requireNonNull(additionalModule, "additionalModule is null");
+            return this;
+        }
+
+        public Builder setBaseDataDir(Optional<Path> baseDataDir)
+        {
+            this.baseDataDir = requireNonNull(baseDataDir, "baseDataDir is null");
+            return this;
+        }
+
+        public Builder setSystemAccessControl(String name, Map<String, String> properties)
+        {
+            this.systemAccessControlName = requireNonNull(name, "name is null");
+            this.systemAccessControlProperties = ImmutableMap.copyOf(requireNonNull(properties, "properties is null"));
+            return this;
+        }
+
+        public TestingPrestoServer build()
+        {
+            return new TestingPrestoServer(
+                    coordinator,
+                    properties,
+                    environment,
+                    discoveryUri,
+                    additionalModule,
+                    baseDataDir,
+                    systemAccessControlName,
+                    systemAccessControlProperties);
         }
     }
 }

@@ -129,6 +129,7 @@ import io.prestosql.sql.tree.Expression;
 import io.prestosql.transaction.TransactionManagerConfig;
 import io.prestosql.type.TypeDeserializer;
 import io.prestosql.type.TypeSignatureDeserializer;
+import io.prestosql.type.TypeSignatureKeyDeserializer;
 import io.prestosql.util.FinalizerService;
 import io.prestosql.version.EmbedVersion;
 
@@ -162,12 +163,11 @@ import static org.weakref.jmx.guice.ExportBinder.newExporter;
 public class ServerMainModule
         extends AbstractConfigurationAwareModule
 {
-    private final SqlParserOptions sqlParserOptions;
+    private final String nodeVersion;
 
-    public ServerMainModule(SqlParserOptions sqlParserOptions)
+    public ServerMainModule(String nodeVersion)
     {
-        requireNonNull(sqlParserOptions, "sqlParserOptions is null");
-        this.sqlParserOptions = SqlParserOptions.copyOf(sqlParserOptions);
+        this.nodeVersion = requireNonNull(nodeVersion, "nodeVersion is null");
     }
 
     @Override
@@ -191,8 +191,9 @@ public class ServerMainModule
         configBinder(binder).bindConfig(FeaturesConfig.class);
 
         binder.bind(SqlParser.class).in(Scopes.SINGLETON);
-        binder.bind(SqlParserOptions.class).toInstance(sqlParserOptions);
+        SqlParserOptions sqlParserOptions = new SqlParserOptions();
         sqlParserOptions.useEnhancedErrorHandler(serverConfig.isEnhancedErrorReporting());
+        binder.bind(SqlParserOptions.class).toInstance(sqlParserOptions);
 
         jaxrsBinder(binder).bind(ThrowableMapper.class);
 
@@ -314,7 +315,7 @@ public class ServerMainModule
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
                     config.setMaxConnectionsPerServer(250);
-                    config.setMaxContentLength(new DataSize(32, MEGABYTE));
+                    config.setMaxContentLength(DataSize.of(32, MEGABYTE));
                 });
 
         configBinder(binder).bindConfig(ExchangeClientConfig.class);
@@ -351,6 +352,7 @@ public class ServerMainModule
         binder.bind(TypeAnalyzer.class).in(Scopes.SINGLETON);
         jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
         jsonBinder(binder).addDeserializerBinding(TypeSignature.class).to(TypeSignatureDeserializer.class);
+        jsonBinder(binder).addKeyDeserializerBinding(TypeSignature.class).to(TypeSignatureKeyDeserializer.class);
         newSetBinder(binder, Type.class);
 
         // split manager
@@ -382,13 +384,10 @@ public class ServerMainModule
         // split monitor
         binder.bind(SplitMonitor.class).in(Scopes.SINGLETON);
 
-        // Determine the NodeVersion
-        NodeVersion nodeVersion = new NodeVersion(serverConfig.getPrestoVersion());
-        binder.bind(NodeVersion.class).toInstance(nodeVersion);
-
-        // presto announcement
+        // version and announcement
+        binder.bind(NodeVersion.class).toInstance(new NodeVersion(nodeVersion));
         discoveryBinder(binder).bindHttpAnnouncement("presto")
-                .addProperty("node_version", nodeVersion.toString())
+                .addProperty("node_version", nodeVersion)
                 .addProperty("coordinator", String.valueOf(serverConfig.isCoordinator()));
 
         // server info resource

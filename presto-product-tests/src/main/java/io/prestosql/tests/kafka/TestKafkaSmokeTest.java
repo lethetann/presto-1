@@ -38,6 +38,7 @@ import static io.prestosql.tempto.fulfillment.table.TableRequirements.immutableT
 import static io.prestosql.tempto.fulfillment.table.kafka.KafkaMessageContentsBuilder.contentsBuilder;
 import static io.prestosql.tempto.query.QueryExecutor.query;
 import static io.prestosql.tests.TestGroups.KAFKA;
+import static io.prestosql.tests.TestGroups.PROFILE_SPECIFIC_TESTS;
 import static java.lang.Double.doubleToRawLongBits;
 import static java.lang.Float.floatToIntBits;
 import static java.lang.String.format;
@@ -76,7 +77,7 @@ public class TestKafkaSmokeTest
         }
     }
 
-    @Test(groups = KAFKA)
+    @Test(groups = {KAFKA, PROFILE_SPECIFIC_TESTS})
     @Requires(SimpleKeyAndValueTable.class)
     public void testSelectSimpleKeyAndValue()
     {
@@ -128,7 +129,7 @@ public class TestKafkaSmokeTest
         }
     }
 
-    @Test(groups = KAFKA)
+    @Test(groups = {KAFKA, PROFILE_SPECIFIC_TESTS})
     @Requires(AllDataTypesRawTable.class)
     public void testSelectAllRawTable()
     {
@@ -199,7 +200,7 @@ public class TestKafkaSmokeTest
         }
     }
 
-    @Test(groups = KAFKA)
+    @Test(groups = {KAFKA, PROFILE_SPECIFIC_TESTS})
     @Requires(AllDataTypesCsvTable.class)
     public void testSelectAllCsvTable()
     {
@@ -274,7 +275,7 @@ public class TestKafkaSmokeTest
         }
     }
 
-    @Test(groups = KAFKA)
+    @Test(groups = {KAFKA, PROFILE_SPECIFIC_TESTS})
     @Requires(AllDataTypesJsonTable.class)
     public void testSelectAllJsonTable()
     {
@@ -291,11 +292,11 @@ public class TestKafkaSmokeTest
                 row("c_tinyint", "tinyint"),
                 row("c_double", "double"),
                 row("c_boolean", "boolean"),
-                row("c_timestamp_milliseconds_since_epoch", "timestamp"),
-                row("c_timestamp_seconds_since_epoch", "timestamp"),
-                row("c_timestamp_iso8601", "timestamp"),
-                row("c_timestamp_rfc2822", "timestamp"),
-                row("c_timestamp_custom", "timestamp"),
+                row("c_timestamp_milliseconds_since_epoch", "timestamp(3)"),
+                row("c_timestamp_seconds_since_epoch", "timestamp(3)"),
+                row("c_timestamp_iso8601", "timestamp(3)"),
+                row("c_timestamp_rfc2822", "timestamp(3)"),
+                row("c_timestamp_custom", "timestamp(3)"),
                 row("c_date_iso8601", "date"),
                 row("c_date_rfc2822", "date"),
                 row("c_date_custom", "date"),
@@ -304,11 +305,11 @@ public class TestKafkaSmokeTest
                 row("c_time_iso8601", "time"),
                 row("c_time_rfc2822", "time"),
                 row("c_time_custom", "time"),
-                row("c_timestamptz_milliseconds_since_epoch", "timestamp with time zone"),
-                row("c_timestamptz_seconds_since_epoch", "timestamp with time zone"),
-                row("c_timestamptz_iso8601", "timestamp with time zone"),
-                row("c_timestamptz_rfc2822", "timestamp with time zone"),
-                row("c_timestamptz_custom", "timestamp with time zone"),
+                row("c_timestamptz_milliseconds_since_epoch", "timestamp(3) with time zone"),
+                row("c_timestamptz_seconds_since_epoch", "timestamp(3) with time zone"),
+                row("c_timestamptz_iso8601", "timestamp(3) with time zone"),
+                row("c_timestamptz_rfc2822", "timestamp(3) with time zone"),
+                row("c_timestamptz_custom", "timestamp(3) with time zone"),
                 row("c_timetz_milliseconds_since_epoch", "time with time zone"),
                 row("c_timetz_seconds_since_epoch", "time with time zone"),
                 row("c_timetz_iso8601", "time with time zone"),

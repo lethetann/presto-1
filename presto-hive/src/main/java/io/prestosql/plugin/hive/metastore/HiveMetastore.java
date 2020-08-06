@@ -38,13 +38,13 @@ public interface HiveMetastore
 
     Set<ColumnStatisticType> getSupportedColumnStatistics(Type type);
 
-    PartitionStatistics getTableStatistics(HiveIdentity identity, String databaseName, String tableName);
+    PartitionStatistics getTableStatistics(HiveIdentity identity, Table table);
 
-    Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, String databaseName, String tableName, Set<String> partitionNames);
+    Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, Table table, List<Partition> partitions);
 
     void updateTableStatistics(HiveIdentity identity, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update);
 
-    void updatePartitionStatistics(HiveIdentity identity, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update);
+    void updatePartitionStatistics(HiveIdentity identity, Table table, String partitionName, Function<PartitionStatistics, PartitionStatistics> update);
 
     List<String> getAllTables(String databaseName);
 
@@ -57,6 +57,8 @@ public interface HiveMetastore
     void dropDatabase(HiveIdentity identity, String databaseName);
 
     void renameDatabase(HiveIdentity identity, String databaseName, String newDatabaseName);
+
+    void setDatabaseOwner(HiveIdentity identity, String databaseName, HivePrincipal principal);
 
     void createTable(HiveIdentity identity, Table table, PrincipalPrivileges principalPrivileges);
 
@@ -72,6 +74,8 @@ public interface HiveMetastore
     void renameTable(HiveIdentity identity, String databaseName, String tableName, String newDatabaseName, String newTableName);
 
     void commentTable(HiveIdentity identity, String databaseName, String tableName, Optional<String> comment);
+
+    void commentColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, Optional<String> comment);
 
     void addColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment);
 
@@ -99,9 +103,11 @@ public interface HiveMetastore
 
     Set<String> listRoles();
 
-    void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean withAdminOption, HivePrincipal grantor);
+    void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
 
-    void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOptionFor, HivePrincipal grantor);
+    void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor);
+
+    Set<RoleGrant> listGrantedPrincipals(String role);
 
     Set<RoleGrant> listRoleGrants(HivePrincipal principal);
 
